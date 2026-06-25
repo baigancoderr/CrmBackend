@@ -2,48 +2,15 @@ const bcrypt = require("bcryptjs");
 const User = require("./user.model");
 
 const createUser = async (currentUser, body) => {
-    const {
-  name,
-  email,
-  role,
-  phone,
-  department,
-  designation,
-  joiningDate,
-  manager,
-  teamLeader,
-  addressInfo,
-  socialLinks,
-  gender,
-  profilePhoto,
-} = body;
+    const {name,email,role,phone,department,designation,joiningDate,manager,teamLeader,addressInfo,socialLinks,gender,profilePhoto,} = body;
 
-    const rolePermissions = {
-        SUPER_ADMIN: [
-            "HR",
-            "PROJECT_MANAGER",
-            "TL",
-            "EMPLOYEE",
-        ],
-
-        HR: [
-            "PROJECT_MANAGER",
-            "TL",
-            "EMPLOYEE",
-        ],
-
-        PROJECT_MANAGER: [
-            "TL",
-            "EMPLOYEE",
-        ],
-
-        TL: [
-            "EMPLOYEE",
-        ],
+    const rolePermissions = {SUPER_ADMIN: ["HR","PROJECT_MANAGER","TL","EMPLOYEE",],
+        HR: ["PROJECT_MANAGER","TL","EMPLOYEE",],
+        PROJECT_MANAGER: ["TL","EMPLOYEE",],
+        TL: ["EMPLOYEE",],
     };
 
-    const allowedRoles =
-        rolePermissions[currentUser.role] || [];
+    const allowedRoles = rolePermissions[currentUser.role] || [];
 
     if (!allowedRoles.includes(role)) {
         throw new Error(
@@ -61,20 +28,14 @@ const createUser = async (currentUser, body) => {
         );
     }
 
-    const totalUsers =
-        await User.countDocuments();
+    const totalUsers =await User.countDocuments();
 
     const employeeId = `DOB${String(
         totalUsers + 1
-    ).padStart(5, "0")}`;
+    ).padStart(4, "0")}`;
 
-    const temporaryPassword = "Temp@123";
-
-    const hashedPassword =
-        await bcrypt.hash(
-            temporaryPassword,
-            10
-        );
+   const temporaryPassword =Math.random().toString(36).slice(-8) + "@123";
+   const hashedPassword =await bcrypt.hash(temporaryPassword,10);
 
    const newUser = await User.create({
   employeeId,
@@ -132,23 +93,10 @@ const getProfile = async (userId) => {
     return user;
 };
 
-const updateProfile = async (
-    userId,
-    body
-) => {
-    const {
-        name,
-        phone,
-        gender,
-        profilePhoto,
+const updateProfile = async (userId,body) => {
+    const {name,phone,gender,profilePhoto,addressInfo,socialLinks,} = body;
 
-        addressInfo,
-
-        socialLinks,
-    } = body;
-
-    const user =
-        await User.findById(userId);
+    const user =await User.findById(userId);
 
     if (!user) {
         throw new Error(
@@ -237,14 +185,10 @@ const getUserById = async (userId) => {
     return user;
 };
 
-const updateUserStatus = async (
-    userId,
-    body
-) => {
+const updateUserStatus = async (userId,body) => {
     const { isActive } = body;
 
-    const user =
-        await User.findById(userId);
+    const user =await User.findById(userId);
 
     if (!user) {
         throw new Error(
@@ -269,8 +213,7 @@ const updateUserStatus = async (
 };
 
 const getDashboardCounts = async () => {
-    const totalUsers =
-        await User.countDocuments();
+    const totalUsers =await User.countDocuments();
 
     const totalHR =
         await User.countDocuments({

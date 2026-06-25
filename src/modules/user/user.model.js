@@ -167,10 +167,83 @@ const userSchema = new mongoose.Schema(
             default: true,
         },
 
-        lastLogin: {
-            type: Date,
-            default: null,
-        },
+       officeTiming: {
+    startTime: {
+        type: String,
+        default: "10:00"
+    },
+
+    endTime: {
+        type: String,
+        default: "19:00"
+    }
+},
+
+weeklyOff: {
+    type: [String],
+    default: ["SATURDAY", "SUNDAY"]
+},
+
+employmentType: {
+    type: String,
+    enum: [
+        "FULL_TIME",
+        "PART_TIME",
+        "INTERN",
+        "CONTRACT"
+    ],
+    default: "FULL_TIME"
+},
+
+passwordResetRequest: {
+  status: {
+    type: String,
+    enum: ["NONE", "PENDING", "APPROVED", "REJECTED"],
+    default: "NONE",
+  },
+  reason: String,
+  requestedAt: Date,
+  reviewedAt: Date,
+  reviewedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+  },
+  remarks: String,
+},
+
+passwordResetHistory: [
+  {
+    status: {
+      type: String,
+      enum: ["APPROVED", "REJECTED"],
+    },
+
+    reason: String,
+
+    requestedAt: Date,
+
+    reviewedAt: Date,
+
+    reviewedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+
+    remarks: String,
+
+    temporaryPassword: String,
+  },
+],
+
+lastPasswordChangedAt: {
+  type: Date,
+  default: null,
+},
+
+lastLogin: {
+    type: Date,
+    default: null
+} ,
     },
     {
         timestamps: true,

@@ -22,10 +22,7 @@ const createUser = async (req, res) => {
 
 const getProfile = async (req, res) => {
     try {
-        const result =
-            await userService.getProfile(
-                req.user.id
-            );
+        const result = await userService.getProfile(req.user.id);
 
         return res.status(200).json({
             success: true,
@@ -41,11 +38,7 @@ const getProfile = async (req, res) => {
 
 const updateProfile = async (req, res) => {
     try {
-        const result =
-            await userService.updateProfile(
-                req.user.id,
-                req.body
-            );
+        const result =await userService.updateProfile(req.user.id,req.body);
 
         return res.status(200).json({
             success: true,
@@ -63,8 +56,7 @@ const updateProfile = async (req, res) => {
 
 const getAllUsers = async (req, res) => {
     try {
-        const result =
-            await userService.getAllUsers();
+        const result =await userService.getAllUsers();
 
         return res.status(200).json({
             success: true,
@@ -81,10 +73,7 @@ const getAllUsers = async (req, res) => {
 
 const getUserById = async (req, res) => {
     try {
-        const result =
-            await userService.getUserById(
-                req.params.id
-            );
+        const result =await userService.getUserById(req.params.id);
 
         return res.status(200).json({
             success: true,
@@ -100,11 +89,7 @@ const getUserById = async (req, res) => {
 
 const updateUserStatus = async (req, res) => {
     try {
-        const result =
-            await userService.updateUserStatus(
-                req.params.id,
-                req.body
-            );
+        const result =await userService.updateUserStatus(req.params.id,req.body);
 
         return res.status(200).json({
             success: true,
@@ -119,13 +104,9 @@ const updateUserStatus = async (req, res) => {
     }
 };
 
-const getDashboardCounts = async (
-    req,
-    res
-) => {
+const getDashboardCounts = async (req,res) => {
     try {
-        const result =
-            await userService.getDashboardCounts();
+        const result =await userService.getDashboardCounts();
 
         return res.status(200).json({
             success: true,
@@ -144,7 +125,7 @@ module.exports = {
     getProfile, 
     updateProfile,
     getAllUsers,
-     getUserById,
+    getUserById,
     updateUserStatus,
     getDashboardCounts,
 };

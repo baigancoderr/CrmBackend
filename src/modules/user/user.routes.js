@@ -6,49 +6,19 @@ const authMiddleware = require("../../middleware/auth.middleware");
 
 // const roleMiddleware = require("../../middleware/role.middleware");
 
-router.post(
-    "/create",
-    authMiddleware,
-    userController.createUser
-);
+router.post("/create",authMiddleware,userController.createUser);
 
-router.get(
-    "/profile",
-    authMiddleware,
-    userController.getProfile
-);
+router.get("/profile",authMiddleware,userController.getProfile);
 
-router.put(
-    "/profile",
-    authMiddleware,
-    userController.updateProfile
-);
+router.put("/profile",authMiddleware,userController.updateProfile);
 
-router.get(
-    "/",
-    authMiddleware,
-    userController.getAllUsers
-);
+router.get("/",authMiddleware,userController.getAllUsers);
 
-router.get(
-    "/dashboard-counts",
-    authMiddleware,
-    userController.getDashboardCounts
-);
+router.get("/dashboard-counts",authMiddleware,userController.getDashboardCounts);
 
-router.get(
-    "/:id",
-    authMiddleware,
-    userController.getUserById
-);
+router.get("/:id",authMiddleware,userController.getUserById);
 
-
-
-router.patch(
-    "/status/:id",
-    authMiddleware,
-    userController.updateUserStatus
-);
+router.patch("/status/:id",authMiddleware,userController.updateUserStatus);
 
 
 

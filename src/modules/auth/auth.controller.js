@@ -31,7 +31,88 @@ const changePassword = async (req, res) => {
   }
 };
 
+const requestPasswordReset = async (req, res) => {
+  try {
+    const result = await authService.requestPasswordReset(
+      req.user.id,
+      req.body
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const getPasswordResetRequests = async (req, res) => {
+  try {
+    const result = await authService.getPasswordResetRequests();
+
+    return res.status(200).json({
+      success: true,
+      count: result.length,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const rejectPasswordReset = async (req, res) => {
+  try {
+    const result = await authService.rejectPasswordReset(
+      req.params.id,
+      req.user.id,
+      req.body
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const resetPassword = async (req, res) => {
+  try {
+    const result = await authService.resetPassword(
+      req.params.id,
+      req.user.id
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: result.message,
+      data: result.data,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
 module.exports = {
   login,
   changePassword,
+   resetPassword,
+   requestPasswordReset,
+  getPasswordResetRequests,
+  rejectPasswordReset,
 };
