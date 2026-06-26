@@ -28,4 +28,7 @@ router.patch("/:id/reset-password",authMiddleware,roleMiddleware("HR", "SUPER_AD
   authController.resetPassword
 );
 
+
+router.post("/logout",authMiddleware,authController.logout);
+
 module.exports = router;

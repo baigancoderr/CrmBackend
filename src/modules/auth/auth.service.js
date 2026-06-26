@@ -1,52 +1,48 @@
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 
 const User = require("../user/user.model");
 
-const {generateAccessToken,generateRefreshToken,} = require("../../utils/jwt");
+const {generateAccessToken,generateRefreshToken,createSessionId,} = require("../../utils/jwt");
 
-const { redisClient } =require("../../config/redis");
+const { redisClient } = require("../../config/redis");
 
 const login = async (body) => {
   const { email, password } = body;
-  const user = await User.findOne({email,});
+  const user = await User.findOne({ email });
 
   if (!user) {
-    throw new Error(
-      "Invalid Credentials"
-    );
+    throw new Error("Invalid Credentials");
   }
 
-  const isMatch =
-    await bcrypt.compare(
-      password,
-      user.password
-    );
+  const isMatch = await bcrypt.compare(password,user.password);
 
   if (!isMatch) {
-    throw new Error(
-      "Invalid Credentials"
-    );
+    throw new Error("Invalid Credentials");
   }
-  
+
   if (!user.isActive) {
     throw new Error(
-        "Your account is inactive. Contact administrator."
+      "Your account is inactive. Contact administrator."
     );
-}
+  }
 
-  const accessToken = generateAccessToken(user);
+  const sessionId = createSessionId();
+  const accessToken = generateAccessToken(user, sessionId);
   const refreshToken = generateRefreshToken(user);
 
-  await redisClient.set(
-    `refresh:${user._id}`,
-    refreshToken
-  );
+  await redisClient.set(`session:${user._id}`, sessionId, {
+    EX: 60 * 60 * 24 * 7,
+  });
+
+  await redisClient.set(`refresh:${user._id}`, refreshToken, {
+    EX: 60 * 60 * 24 * 7,
+  });
 
   return {
     accessToken,
     refreshToken,
-    isFirstLogin:
-    user.isFirstLogin,
+    isFirstLogin: user.isFirstLogin,
     role: user.role,
   };
 };
@@ -259,6 +255,27 @@ const refreshAccessToken = async (refreshToken) => {
   };
 };
 
+
+const logout = async (userId) => {
+  const user = await User.findById(userId);
+
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  const session = await redisClient.get(`session:${userId}`);
+
+  if (!session) {
+    throw new Error("User already logged out");
+  }
+
+  await redisClient.del([`refresh:${userId}`, `session:${userId}`]);
+
+  return {
+    message: "Logout Successfully",
+  };
+};
+
 module.exports = {
   login,
   changePassword,
@@ -267,4 +284,5 @@ module.exports = {
   getPasswordResetRequests,
   rejectPasswordReset,
   refreshAccessToken,
+   logout,
 };

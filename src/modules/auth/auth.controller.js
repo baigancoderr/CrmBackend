@@ -120,6 +120,21 @@ const refreshToken = async (req, res) => {
     });
   }
 };
+const logout = async (req, res) => {
+  try {
+    const result = await authService.logout(req.user.id);
+
+    return res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
 
 module.exports = {
   login,
@@ -129,4 +144,5 @@ module.exports = {
   getPasswordResetRequests,
   rejectPasswordReset,
   refreshToken,
+  logout
 };
