@@ -25,6 +25,44 @@ app.use("/api", routes);
     await connectDB();
     await connectRedis();
 
+    const {
+      syncBiometricPunches,
+    } = require("./src/modules/biometric/biometricSync.service");
+
+    const syncIntervalMs =
+      Number(process.env.ETIME_SYNC_INTERVAL_MS) ||
+      2 * 60 * 1000;
+
+    const runBiometricSync = async () => {
+      try {
+        const result = await syncBiometricPunches();
+        console.log(
+          `[Biometric Sync] ${result.message}`
+        );
+      } catch (error) {
+        console.error(
+          "[Biometric Sync] Failed:",
+          error.message
+        );
+      }
+    };
+
+    if (
+      process.env.ETIME_CORPORATE_ID &&
+      process.env.ETIME_USERNAME &&
+      process.env.ETIME_PASSWORD
+    ) {
+      runBiometricSync();
+      setInterval(runBiometricSync, syncIntervalMs);
+      console.log(
+        `Biometric sync scheduled every ${syncIntervalMs / 1000}s`
+      );
+    } else {
+      console.warn(
+        "Biometric sync disabled: E-TimeOffice credentials not configured"
+      );
+    }
+
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });

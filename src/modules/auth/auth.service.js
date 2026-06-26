@@ -206,6 +206,59 @@ const rejectPasswordReset = async (userId,hrId,body) => {
   };
 };
 
+const refreshAccessToken = async (refreshToken) => {
+  const jwt = require("jsonwebtoken");
+
+  if (!refreshToken) {
+    throw new Error("Refresh token is required");
+  }
+
+  let decoded;
+
+  try {
+    decoded = jwt.verify(
+      refreshToken,
+      process.env.JWT_REFRESH_SECRET
+    );
+  } catch {
+    throw new Error("Invalid refresh token");
+  }
+
+  const storedToken = await redisClient.get(
+    `refresh:${decoded.id}`
+  );
+
+  if (storedToken && storedToken !== refreshToken) {
+    throw new Error("Invalid refresh token");
+  }
+
+  if (!storedToken) {
+    await redisClient.set(
+      `refresh:${decoded.id}`,
+      refreshToken
+    );
+  }
+
+  const user = await User.findById(decoded.id);
+
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  if (!user.isActive) {
+    throw new Error(
+      "Your account is inactive. Contact administrator."
+    );
+  }
+
+  const accessToken = generateAccessToken(user);
+
+  return {
+    accessToken,
+    role: user.role,
+  };
+};
+
 module.exports = {
   login,
   changePassword,
@@ -213,4 +266,5 @@ module.exports = {
   requestPasswordReset,
   getPasswordResetRequests,
   rejectPasswordReset,
+  refreshAccessToken,
 };

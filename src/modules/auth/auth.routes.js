@@ -6,6 +6,8 @@ const roleMiddleware = require("../../middleware/role.middleware");
 
 router.post("/login", authController.login);
 
+router.post("/refresh", authController.refreshToken);
+
 router.post("/change-password",authMiddleware,
   authController.changePassword
 );

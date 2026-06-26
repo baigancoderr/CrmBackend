@@ -19,7 +19,21 @@ router.get("/my-history", authMiddleware, roleMiddleware(...ALL_ROLES), attendan
 
 router.get("/my-monthly", authMiddleware, roleMiddleware(...ALL_ROLES), attendanceController.getMyMonthlyAttendance);
 
-router.get("/dashboard", authMiddleware, roleMiddleware(...ADMIN_ROLES), attendanceController.getDashboard);
+router.get("/dashboard", authMiddleware, roleMiddleware(...MANAGEMENT_ROLES), attendanceController.getDashboard);
+
+router.get(
+  "/dashboard-details",
+  authMiddleware,
+  roleMiddleware(...MANAGEMENT_ROLES),
+  attendanceController.getAttendanceDashboardDetails
+);
+
+router.get(
+  "/my-dashboard",
+  authMiddleware,
+  roleMiddleware(...ALL_ROLES),
+  attendanceController.getMyAttendanceDashboard
+);
 
 router.get("/employee/:employeeId", authMiddleware, roleMiddleware(...MANAGEMENT_ROLES), attendanceController.getEmployeeAttendance);
 

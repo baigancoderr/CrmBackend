@@ -9,6 +9,24 @@ const attendanceSchema = new mongoose.Schema(
       index: true,
     },
 
+    employeeId: {
+      type: String,
+      default: "",
+      index: true,
+    },
+
+    employeeName: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    biometricEmpCode: {
+      type: String,
+      default: "",
+      index: true,
+    },
+
     date: {
       type: String,
       required: true,
@@ -23,6 +41,18 @@ const attendanceSchema = new mongoose.Schema(
     clockOut: {
       type: Date,
       default: null,
+    },
+
+    clockInSource: {
+      type: String,
+      enum: ["MANUAL", "BIOMETRIC"],
+      default: "MANUAL",
+    },
+
+    clockOutSource: {
+      type: String,
+      enum: ["MANUAL", "BIOMETRIC"],
+      default: "MANUAL",
     },
 
     workingMinutes: {
@@ -41,6 +71,11 @@ const attendanceSchema = new mongoose.Schema(
     },
 
     shortfallMinutes: {
+      type: Number,
+      default: 0,
+    },
+
+    earlyOutMinutes: {
       type: Number,
       default: 0,
     },

@@ -76,6 +76,25 @@ const userSchema = new mongoose.Schema(
             unique: true,
         },
 
+        biometricEmpCode: {
+            type: String,
+            unique: true,
+            sparse: true,
+            trim: true,
+        },
+
+        firstName: {
+            type: String,
+            trim: true,
+            default: "",
+        },
+
+        lastName: {
+            type: String,
+            default: "",
+            trim: true,
+        },
+
         name: {
             type: String,
             required: true,
@@ -102,6 +121,7 @@ const userSchema = new mongoose.Schema(
                 "HR",
                 "PROJECT_MANAGER",
                 "TL",
+                "ACCOUNTANT",
                 "EMPLOYEE",
             ],
             default: "EMPLOYEE",
@@ -139,6 +159,16 @@ const userSchema = new mongoose.Schema(
 
         joiningDate: {
             type: Date,
+        },
+
+        officeLocation: {
+            type: String,
+            default: "",
+        },
+
+        shift: {
+            type: String,
+            default: "",
         },
 
         manager: {

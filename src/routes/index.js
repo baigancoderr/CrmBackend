@@ -6,4 +6,6 @@ router.use("/users", require("../modules/user/user.routes"));
 
 router.use("/attendance",require("../modules/attendance/attendance.routes"));
 
+router.use("/biometric", require("../modules/biometric/biometric.routes"));
+
 module.exports = router;

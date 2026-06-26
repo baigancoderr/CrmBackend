@@ -6,7 +6,9 @@
    "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
-    "seed-admin": "node scripts/seedAdmin.js"
+    "seed-admin": "node scripts/seedAdmin.js",
+    "backfill-biometric-codes": "node scripts/backfillBiometricCodes.js",
+    "sync-employee-id-counter": "node scripts/syncEmployeeIdCounter.js"
   },
   "keywords": [],
   "author": "",

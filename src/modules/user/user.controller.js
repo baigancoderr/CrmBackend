@@ -120,6 +120,27 @@ const getDashboardCounts = async (req,res) => {
     }
 };
 
+const updateBiometricEmpCode = async (req, res) => {
+    try {
+        const result = await userService.updateBiometricEmpCode(
+            req.user,
+            req.params.id,
+            req.body.biometricEmpCode
+        );
+
+        return res.status(200).json({
+            success: true,
+            message: result.message,
+            data: result.data,
+        });
+    } catch (error) {
+        return res.status(400).json({
+            success: false,
+            message: error.message,
+        });
+    }
+};
+
 module.exports = {
     createUser,
     getProfile, 
@@ -127,5 +148,6 @@ module.exports = {
     getAllUsers,
     getUserById,
     updateUserStatus,
+    updateBiometricEmpCode,
     getDashboardCounts,
 };
