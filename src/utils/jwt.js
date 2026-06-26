@@ -1,10 +1,12 @@
+const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 
-const generateAccessToken = (user) => {
+const generateAccessToken = (user, sessionId) => {
   return jwt.sign(
     {
       id: user._id,
       role: user.role,
+      sessionId,
     },
     process.env.JWT_SECRET,
     {
@@ -25,7 +27,10 @@ const generateRefreshToken = (user) => {
   );
 };
 
+const createSessionId = () => crypto.randomBytes(16).toString("hex");
+
 module.exports = {
   generateAccessToken,
   generateRefreshToken,
+  createSessionId,
 };

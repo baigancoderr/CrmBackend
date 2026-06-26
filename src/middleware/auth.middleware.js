@@ -1,6 +1,35 @@
-const jwt = require("jsonwebtoken");
+// const jwt = require("jsonwebtoken");
 
-const authMiddleware = (req, res, next) => {
+// const authMiddleware = (req, res, next) => {
+//   try {
+//     const authHeader = req.headers.authorization;
+
+//     if (!authHeader) {
+//       return res.status(401).json({
+//         message: "Token Required",
+//       });
+//     }
+
+//     const token = authHeader.split(" ")[1];
+//     const decoded = jwt.verify(token,process.env.JWT_SECRET);
+
+//     req.user = decoded;
+
+//     next();
+//   } catch (error) {
+//     return res.status(401).json({
+//       message: "Invalid Token",
+//     });
+//   }
+// };
+
+// module.exports = authMiddleware;
+
+
+const jwt = require("jsonwebtoken");
+const { redisClient } = require("../config/redis");
+
+const authMiddleware = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -11,7 +40,27 @@ const authMiddleware = (req, res, next) => {
     }
 
     const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token,process.env.JWT_SECRET);
+
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    );
+
+    const sessionId = await redisClient.get(
+      `session:${decoded.id}`
+    );
+
+    if (!sessionId) {
+      return res.status(401).json({
+        message: "Session invalidated. Please login again.",
+      });
+    }
+
+    if (decoded.sessionId !== sessionId) {
+      return res.status(401).json({
+        message: "Token invalidated. Please login again.",
+      });
+    }
 
     req.user = decoded;
 
