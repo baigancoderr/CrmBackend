@@ -28,6 +28,7 @@
 
 const jwt = require("jsonwebtoken");
 const { redisClient } = require("../config/redis");
+const User = require("../modules/user/user.model");
 
 const authMiddleware = async (req, res, next) => {
   try {
@@ -62,7 +63,27 @@ const authMiddleware = async (req, res, next) => {
       });
     }
 
-    req.user = decoded;
+    const currentUser = await User.findById(decoded.id)
+      .select("role isActive")
+      .lean();
+
+    if (!currentUser) {
+      return res.status(401).json({
+        message: "User not found",
+      });
+    }
+
+    if (!currentUser.isActive) {
+      return res.status(401).json({
+        message: "Your account is inactive. Contact administrator.",
+      });
+    }
+
+    // Always use latest role from DB so role changes apply immediately.
+    req.user = {
+      ...decoded,
+      role: currentUser.role,
+    };
 
     next();
   } catch (error) {

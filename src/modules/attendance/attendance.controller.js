@@ -194,6 +194,26 @@ const getEmployeeAttendance =
     }
   };
 
+const getMonthlyTeamSheet = async (req, res) => {
+  try {
+    const month = Number(req.query.month);
+    const year = Number(req.query.year);
+
+    const result =
+      await attendanceService.getMonthlyTeamSheet(
+        month,
+        year
+      );
+
+    return res.status(200).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 const manualUpdateAttendance = async (req, res) => {
   try {
     const result = await attendanceService.manualUpdateAttendance(
@@ -254,5 +274,6 @@ module.exports = {
   getAttendanceDashboardDetails,
   getMyAttendanceDashboard,
   getEmployeeAttendance,
+  getMonthlyTeamSheet,
   manualUpdateAttendance,
 };

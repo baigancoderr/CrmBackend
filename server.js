@@ -11,6 +11,8 @@ const routes = require("./src/routes");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const isBiometricSyncEnabled =
+  process.env.ETIME_SYNC_ENABLED === "true";
 
 // Middlewares
 app.use(cors());
@@ -26,12 +28,33 @@ app.use("/api", routes);
     await connectRedis();
 
     const {
+      ensureDailyAttendanceRecords,
+    } = require("./src/modules/attendance/attendance.service");
+    const {
       syncBiometricPunches,
     } = require("./src/modules/biometric/biometricSync.service");
 
+    const attendanceSeedIntervalMs =
+      Number(process.env.ATTENDANCE_SEED_INTERVAL_MS) ||
+      60 * 60 * 1000;
     const syncIntervalMs =
       Number(process.env.ETIME_SYNC_INTERVAL_MS) ||
       2 * 60 * 1000;
+
+    const runAttendanceSeed = async () => {
+      try {
+        const result =
+          await ensureDailyAttendanceRecords();
+        console.log(
+          `[Attendance Seed] ${result.createdCount} daily record(s) created for ${result.date}`
+        );
+      } catch (error) {
+        console.error(
+          "[Attendance Seed] Failed:",
+          error.message
+        );
+      }
+    };
 
     const runBiometricSync = async () => {
       try {
@@ -47,7 +70,17 @@ app.use("/api", routes);
       }
     };
 
+    runAttendanceSeed();
+    setInterval(
+      runAttendanceSeed,
+      attendanceSeedIntervalMs
+    );
+    console.log(
+      `Attendance daily seeding scheduled every ${attendanceSeedIntervalMs / 1000}s`
+    );
+
     if (
+      isBiometricSyncEnabled &&
       process.env.ETIME_CORPORATE_ID &&
       process.env.ETIME_USERNAME &&
       process.env.ETIME_PASSWORD
@@ -56,6 +89,10 @@ app.use("/api", routes);
       setInterval(runBiometricSync, syncIntervalMs);
       console.log(
         `Biometric sync scheduled every ${syncIntervalMs / 1000}s`
+      );
+    } else if (!isBiometricSyncEnabled) {
+      console.warn(
+        "Biometric sync is turned off (ETIME_SYNC_ENABLED != true). Manual attendance mode is active."
       );
     } else {
       console.warn(

@@ -37,6 +37,13 @@ router.get(
 
 router.get("/employee/:employeeId", authMiddleware, roleMiddleware(...MANAGEMENT_ROLES), attendanceController.getEmployeeAttendance);
 
+router.get(
+  "/monthly-team-sheet",
+  authMiddleware,
+  roleMiddleware(...ADMIN_ROLES),
+  attendanceController.getMonthlyTeamSheet
+);
+
 router.patch("/manual-update/:id", authMiddleware, roleMiddleware(...ADMIN_ROLES), attendanceController.manualUpdateAttendance);
 
 module.exports = router;

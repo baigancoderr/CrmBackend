@@ -23,6 +23,28 @@ const buildFullName = (firstName, lastName, fallbackName = "") => {
     return (fallbackName || "").trim();
 };
 
+const rolePermissions = {
+    SUPER_ADMIN: ["HR", "PROJECT_MANAGER", "TL", "ACCOUNTANT", "EMPLOYEE"],
+    // HR can manage other HR accounts too, but not Super Admin.
+    HR: ["HR", "PROJECT_MANAGER", "TL", "ACCOUNTANT", "EMPLOYEE"],
+    PROJECT_MANAGER: ["TL", "EMPLOYEE"],
+    TL: ["EMPLOYEE"],
+};
+
+const resolveActorRole = async (currentUser) => {
+    if (!currentUser?.id) {
+        throw new Error("Unauthorized");
+    }
+
+    const actor = await User.findById(currentUser.id).select("role");
+
+    if (!actor) {
+        throw new Error("User not found");
+    }
+
+    return actor.role;
+};
+
 const createUser = async (currentUser, body) => {
     const {
         firstName,
@@ -46,14 +68,8 @@ const createUser = async (currentUser, body) => {
         isActive,
     } = body;
 
-    const rolePermissions = {
-        SUPER_ADMIN: ["HR", "PROJECT_MANAGER", "TL", "ACCOUNTANT", "EMPLOYEE"],
-        HR: ["PROJECT_MANAGER", "TL", "ACCOUNTANT", "EMPLOYEE"],
-        PROJECT_MANAGER: ["TL", "EMPLOYEE"],
-        TL: ["EMPLOYEE"],
-    };
-
-    const allowedRoles = rolePermissions[currentUser.role] || [];
+    const actorRole = await resolveActorRole(currentUser);
+    const allowedRoles = rolePermissions[actorRole] || [];
 
     if (!allowedRoles.includes(role)) {
         throw new Error(
@@ -333,6 +349,220 @@ const updateUserStatus = async (userId,body) => {
     };
 };
 
+const updateUserById = async (currentUser, userId, body) => {
+    const user = await User.findById(userId);
+
+    if (!user) {
+        throw new Error("User not found");
+    }
+
+    const actorRole = await resolveActorRole(currentUser);
+    const allowedTargetRoles = rolePermissions[actorRole] || [];
+
+    if (!allowedTargetRoles.includes(user.role)) {
+        throw new Error(
+            `You do not have permission to update users with role ${user.role}`
+        );
+    }
+
+    if (body.role) {
+        if (!allowedTargetRoles.includes(body.role)) {
+            throw new Error(`You do not have permission to assign role ${body.role}`);
+        }
+    }
+
+    if (body.email !== undefined) {
+        const normalizedEmail = String(body.email).trim().toLowerCase();
+
+        if (!normalizedEmail) {
+            throw new Error("Official email is required");
+        }
+
+        const existingUser = await User.findOne({
+            email: normalizedEmail,
+            _id: { $ne: userId },
+        });
+
+        if (existingUser) {
+            throw new Error("User already exists with this email");
+        }
+
+        user.email = normalizedEmail;
+    }
+
+    if (body.employeeId !== undefined) {
+        const normalizedEmployeeId = normalizeEmployeeId(body.employeeId);
+
+        if (!normalizedEmployeeId) {
+            throw new Error("CRM Employee ID is required");
+        }
+
+        const existingEmployeeId = await User.findOne({
+            employeeId: normalizedEmployeeId,
+            _id: { $ne: userId },
+        });
+
+        if (existingEmployeeId) {
+            throw new Error("CRM Employee ID is already assigned to another employee");
+        }
+
+        user.employeeId = normalizedEmployeeId;
+    }
+
+    if (body.biometricEmpCode !== undefined) {
+        const normalizedCode = normalizeBiometricEmpCode(body.biometricEmpCode);
+
+        if (!normalizedCode) {
+            throw new Error("Biometric machine EMP ID is required");
+        }
+
+        const existingBiometricCode = await User.findOne({
+            biometricEmpCode: normalizedCode,
+            _id: { $ne: userId },
+        });
+
+        if (existingBiometricCode) {
+            throw new Error(
+                "Biometric machine EMP ID is already assigned to another employee"
+            );
+        }
+
+        user.biometricEmpCode = normalizedCode;
+    }
+
+    if (body.manager) {
+        const reportingManager = await User.findById(body.manager);
+
+        if (!reportingManager) {
+            throw new Error("Reporting manager not found");
+        }
+    }
+
+    if (body.firstName !== undefined) {
+        user.firstName = String(body.firstName).trim();
+    }
+
+    if (body.lastName !== undefined) {
+        user.lastName = String(body.lastName).trim();
+    }
+
+    if (body.name !== undefined) {
+        user.name = String(body.name).trim();
+    } else if (body.firstName !== undefined || body.lastName !== undefined) {
+        user.name = buildFullName(user.firstName, user.lastName, user.name);
+    }
+
+    if (body.phone !== undefined) {
+        user.phone = String(body.phone).trim();
+    }
+
+    if (body.gender !== undefined) {
+        user.gender = body.gender;
+    }
+
+    if (body.profilePhoto !== undefined) {
+        user.profilePhoto = body.profilePhoto;
+    }
+
+    if (body.department !== undefined) {
+        user.department = String(body.department).trim();
+    }
+
+    if (body.designation !== undefined) {
+        user.designation = String(body.designation).trim();
+    }
+
+    if (body.joiningDate !== undefined) {
+        user.joiningDate = body.joiningDate ? new Date(body.joiningDate) : null;
+    }
+
+    if (body.officeLocation !== undefined) {
+        user.officeLocation = String(body.officeLocation).trim();
+    }
+
+    if (body.shift !== undefined) {
+        user.shift = String(body.shift).trim();
+    }
+
+    if (body.manager !== undefined) {
+        user.manager = body.manager || null;
+    }
+
+    if (body.teamLeader !== undefined) {
+        user.teamLeader = body.teamLeader || null;
+    }
+
+    if (body.addressInfo !== undefined) {
+        user.addressInfo = {
+            ...user.addressInfo,
+            ...body.addressInfo,
+        };
+    }
+
+    if (body.socialLinks !== undefined) {
+        user.socialLinks = {
+            ...user.socialLinks,
+            ...body.socialLinks,
+        };
+    }
+
+    if (body.employmentType !== undefined) {
+        user.employmentType = body.employmentType;
+    }
+
+    if (body.isActive !== undefined) {
+        user.isActive = Boolean(body.isActive);
+    }
+
+    if (body.role !== undefined) {
+        user.role = body.role;
+    }
+
+    await user.save();
+
+    return {
+        message: "Employee details updated successfully",
+        data: {
+            id: user._id,
+            employeeId: user.employeeId,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            phone: user.phone,
+            department: user.department,
+            designation: user.designation,
+            isActive: user.isActive,
+        },
+    };
+};
+
+const deleteUserById = async (currentUser, userId) => {
+    if (String(currentUser.id) === String(userId)) {
+        throw new Error("You cannot delete your own account");
+    }
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+        throw new Error("User not found");
+    }
+
+    const actorRole = await resolveActorRole(currentUser);
+    const allowedTargetRoles = rolePermissions[actorRole] || [];
+
+    if (!allowedTargetRoles.includes(user.role)) {
+        throw new Error(
+            `You do not have permission to delete users with role ${user.role}`
+        );
+    }
+
+    await User.findByIdAndDelete(userId);
+
+    return {
+        message: "Employee deleted successfully",
+    };
+};
+
 const updateBiometricEmpCode = async (
     currentUser,
     userId,
@@ -438,6 +668,8 @@ module.exports = {
     getAllUsers,
      getUserById,
     updateUserStatus,
+    updateUserById,
+    deleteUserById,
     updateBiometricEmpCode,
     getDashboardCounts,
 };

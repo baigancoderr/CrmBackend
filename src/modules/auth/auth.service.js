@@ -1,5 +1,4 @@
 const bcrypt = require("bcryptjs");
-const crypto = require("crypto");
 
 const User = require("../user/user.model");
 
@@ -82,7 +81,7 @@ const changePassword = async (userId, body) => {
 };
 
 const requestPasswordReset = async (userId, body) => {
-  const { reason } = body;
+  const { reason, source = "SETTINGS" } = body;
 
   const user = await User.findById(userId);
 
@@ -94,20 +93,131 @@ const requestPasswordReset = async (userId, body) => {
     throw new Error("A password reset request is already pending");
   }
 
+  const requestedAt = new Date();
+  const requestReason = reason || "Password reset requested";
+
   user.passwordResetRequest = {
     status: "PENDING",
-    reason,
-    requestedAt: new Date(),
+    reason: requestReason,
+    source,
+    requestedAt,
     reviewedAt: null,
     reviewedBy: null,
     remarks: "",
   };
+
+  user.passwordResetHistory.push({
+    status: "PENDING",
+    reason: requestReason,
+    source,
+    requestedAt,
+    reviewedAt: null,
+    reviewedBy: null,
+    remarks: "",
+  });
 
   await user.save();
 
   return {
     message: "Password reset request submitted successfully",
   };
+};
+
+const forgotPassword = async (body) => {
+  const { email } = body;
+
+  if (!email || !String(email).trim()) {
+    throw new Error("Email is required");
+  }
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const user = await User.findOne({ email: normalizedEmail });
+
+  if (!user || !user.isActive) {
+    return {
+      message:
+        "If your email is registered, your request has been sent to HR. She will contact you soon.",
+    };
+  }
+
+  if (user.passwordResetRequest?.status === "PENDING") {
+    return {
+      message:
+        "A password reset request is already pending. HR will contact you soon.",
+    };
+  }
+
+  const requestedAt = new Date();
+  const requestReason = "Forgot password - requested via login page";
+
+  user.passwordResetRequest = {
+    status: "PENDING",
+    reason: requestReason,
+    source: "LOGIN",
+    requestedAt,
+    reviewedAt: null,
+    reviewedBy: null,
+    remarks: "",
+  };
+
+  user.passwordResetHistory.push({
+    status: "PENDING",
+    reason: requestReason,
+    source: "LOGIN",
+    requestedAt,
+    reviewedAt: null,
+    reviewedBy: null,
+    remarks: "",
+  });
+
+  await user.save();
+
+  return {
+    message:
+      "Request sent to HR. She will contact you soon.",
+  };
+};
+
+const getPasswordResetHistory = async () => {
+  const users = await User.find({
+  $or: [
+      { "passwordResetHistory.0": { $exists: true } },
+      { "passwordResetRequest.status": "PENDING" },
+    ],
+  })
+    .select(
+      "employeeId name email role passwordResetRequest passwordResetHistory"
+    )
+    .populate("passwordResetHistory.reviewedBy", "name employeeId")
+    .lean();
+
+  const records = [];
+
+  users.forEach((user) => {
+    (user.passwordResetHistory || []).forEach((entry, index) => {
+      records.push({
+        id: `${user._id}-${index}`,
+        userId: user._id,
+        employeeId: user.employeeId,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        status: entry.status,
+        reason: entry.reason,
+        source: entry.source || "SETTINGS",
+        requestedAt: entry.requestedAt,
+        reviewedAt: entry.reviewedAt,
+        reviewedBy: entry.reviewedBy,
+        remarks: entry.remarks || "",
+      });
+    });
+  });
+
+  return records.sort(
+    (left, right) =>
+      new Date(right.requestedAt).getTime() -
+      new Date(left.requestedAt).getTime()
+  );
 };
 
 const getPasswordResetRequests = async () => {
@@ -139,24 +249,39 @@ const resetPassword = async (userId, hrId) => {
     10
   );
 
+  const reviewedAt = new Date();
+
+  const pendingHistoryIndex = user.passwordResetHistory.findIndex(
+    (entry) =>
+      entry.status === "PENDING" &&
+      new Date(entry.requestedAt).getTime() ===
+        new Date(user.passwordResetRequest.requestedAt).getTime()
+  );
+
+  if (pendingHistoryIndex >= 0) {
+    user.passwordResetHistory[pendingHistoryIndex].status = "APPROVED";
+    user.passwordResetHistory[pendingHistoryIndex].reviewedAt = reviewedAt;
+    user.passwordResetHistory[pendingHistoryIndex].reviewedBy = hrId;
+  } else {
+    user.passwordResetHistory.push({
+      status: "APPROVED",
+      reason: user.passwordResetRequest.reason,
+      source: user.passwordResetRequest.source || "SETTINGS",
+      requestedAt: user.passwordResetRequest.requestedAt,
+      reviewedAt,
+      reviewedBy: hrId,
+    });
+  }
+
   user.password = hashedPassword;
   user.isFirstLogin = true;
-  user.lastPasswordChangedAt = new Date();
-
-  user.passwordResetHistory.push({
-    status: "APPROVED",
-    reason: user.passwordResetRequest.reason,
-    requestedAt: user.passwordResetRequest.requestedAt,
-    reviewedAt: new Date(),
-    reviewedBy: hrId,
-    temporaryPassword,
-  });
-
-  user.passwordResetRequest = {
-    status: "NONE",
-  };
+  user.lastPasswordChangedAt = reviewedAt;
+  user.passwordResetRequest = { status: "NONE" };
 
   await user.save();
+
+  // End active sessions so the employee must sign in with the new temporary password.
+  await redisClient.del([`refresh:${userId}`, `session:${userId}`]);
 
   return {
     message: "Password reset successfully",
@@ -182,14 +307,31 @@ const rejectPasswordReset = async (userId,hrId,body) => {
     throw new Error("No pending password reset request found");
   }
 
-  user.passwordResetHistory.push({
-    status: "REJECTED",
-    reason: user.passwordResetRequest.reason,
-    requestedAt: user.passwordResetRequest.requestedAt,
-    reviewedAt: new Date(),
-    reviewedBy: hrId,
-    remarks,
-  });
+  const reviewedAt = new Date();
+
+  const pendingHistoryIndex = user.passwordResetHistory.findIndex(
+    (entry) =>
+      entry.status === "PENDING" &&
+      new Date(entry.requestedAt).getTime() ===
+        new Date(user.passwordResetRequest.requestedAt).getTime()
+  );
+
+  if (pendingHistoryIndex >= 0) {
+    user.passwordResetHistory[pendingHistoryIndex].status = "REJECTED";
+    user.passwordResetHistory[pendingHistoryIndex].reviewedAt = reviewedAt;
+    user.passwordResetHistory[pendingHistoryIndex].reviewedBy = hrId;
+    user.passwordResetHistory[pendingHistoryIndex].remarks = remarks;
+  } else {
+    user.passwordResetHistory.push({
+      status: "REJECTED",
+      reason: user.passwordResetRequest.reason,
+      source: user.passwordResetRequest.source || "SETTINGS",
+      requestedAt: user.passwordResetRequest.requestedAt,
+      reviewedAt,
+      reviewedBy: hrId,
+      remarks,
+    });
+  }
 
   user.passwordResetRequest = {
     status: "NONE",
@@ -247,7 +389,13 @@ const refreshAccessToken = async (refreshToken) => {
     );
   }
 
-  const accessToken = generateAccessToken(user);
+  const sessionId = await redisClient.get(`session:${decoded.id}`);
+
+  if (!sessionId) {
+    throw new Error("Session expired. Please login again.");
+  }
+
+  const accessToken = generateAccessToken(user, sessionId);
 
   return {
     accessToken,
@@ -281,7 +429,9 @@ module.exports = {
   changePassword,
   resetPassword,
   requestPasswordReset,
+  forgotPassword,
   getPasswordResetRequests,
+  getPasswordResetHistory,
   rejectPasswordReset,
   refreshAccessToken,
    logout,

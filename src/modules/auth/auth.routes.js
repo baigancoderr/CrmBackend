@@ -6,6 +6,8 @@ const roleMiddleware = require("../../middleware/role.middleware");
 
 router.post("/login", authController.login);
 
+router.post("/forgot-password", authController.forgotPassword);
+
 router.post("/refresh", authController.refreshToken);
 
 router.post("/change-password",authMiddleware,
@@ -18,6 +20,10 @@ router.post("/request-password-reset",authMiddleware,
 
 router.get("/password-reset-requests",authMiddleware,roleMiddleware("HR", "SUPER_ADMIN"),
   authController.getPasswordResetRequests
+);
+
+router.get("/password-reset-history",authMiddleware,roleMiddleware("HR", "SUPER_ADMIN"),
+  authController.getPasswordResetHistory
 );
 
 router.patch("/:id/reject-password-reset",authMiddleware,roleMiddleware("HR", "SUPER_ADMIN"),
