@@ -18,7 +18,6 @@ const getDatesBetween = (fromDate, toDate) => {
 
 const isWeekend = (date) => {
   const day = new Date(date).getDay();
-
   return day === 0 || day === 6;
 };
 
@@ -80,9 +79,7 @@ const calculateLeaveDays = async (
   };
 };
 
-const hasPendingLeave = async (
-  employeeId
-) => {
+const hasPendingLeave = async (employeeId) => {
   return await Leave.findOne({
     employeeId,
     status: "PENDING",
@@ -90,9 +87,7 @@ const hasPendingLeave = async (
   });
 };
 
-const getMentionUsers = async (
-  mentionIds = []
-) => {
+const getMentionUsers = async (mentionIds = []) => {
 
      mentionIds = [
     ...new Set(
@@ -103,12 +98,7 @@ const getMentionUsers = async (
     return [];
   }
 
-  const allowedRoles = [
-    "HR",
-    "TL",
-    "MANAGER",
-    "SUPER_ADMIN",
-  ];
+  const allowedRoles = ["HR","TL","MANAGER","SUPER_ADMIN",];
 
   const users = await User.find({
     _id: {
@@ -132,11 +122,7 @@ const getMentionUsers = async (
   return users;
 };
 
-const APPROVER_ROLES = [
-  "HR",
-  "MANAGER",
-  "SUPER_ADMIN",
-];
+const APPROVER_ROLES = ["HR","MANAGER","SUPER_ADMIN",];
 
 
 const canApproveLeave = (role) => {

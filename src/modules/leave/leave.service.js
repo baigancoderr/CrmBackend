@@ -2,35 +2,16 @@ const Leave = require("./leave.model");
 const LeaveBalance = require("./leaveBalance.model");
 const User = require("../user/user.model");
 
-const {
-  calculateLeaveDays,
-  hasPendingLeave,
-  getMentionUsers,
-  canApproveLeave,
-} = require("./leave.helper");
+const {calculateLeaveDays,hasPendingLeave,getMentionUsers,canApproveLeave,} = require("./leave.helper");
 
-const createLeave = async (
-  body,
-  employeeId
-) => {
-  const {
-    fromDate,
-    toDate,
-    category = "FULL_DAY",
-    reason,
-    attachment = "",
-    mentions = [],
-
+const createLeave = async (body,employeeId) => {
+  const {fromDate,toDate,category = "FULL_DAY",reason,attachment = "",mentions = [],
     leaveDeductionType,
     leaveBalanceDays = 0,
     salaryDeductionDays = 0,
   } = body;
 
-  if (!fromDate) {
-    throw new Error(
-      "From Date is required."
-    );
-  }
+  if (!fromDate) {throw new Error("From Date is required.");}
 
   if (!toDate) {
     throw new Error(
@@ -44,42 +25,27 @@ const createLeave = async (
     );
   }
 
-  if (
-    !["FULL_DAY", "HALF_DAY"].includes(
-      category
-    )
-  ) {
+  if (!["FULL_DAY", "HALF_DAY"].includes(category)) {
     throw new Error(
       "Invalid leave category."
     );
   }
 
-  if (
-    ![
-      "LEAVE_BALANCE",
-      "SALARY",
-      "BOTH",
-    ].includes(leaveDeductionType)
-  ) {
+  if (!["LEAVE_BALANCE","SALARY","BOTH",].includes(leaveDeductionType)) {
     throw new Error(
       "Invalid leave deduction type."
     );
   }
-
   const startDate = new Date(fromDate);
   const endDate = new Date(toDate);
 
-  if (
-    startDate.getTime() >
-    endDate.getTime()
-  ) {
+  if (startDate.getTime() >endDate.getTime()) {
     throw new Error(
       "From Date cannot be greater than To Date."
     );
   }
 
-  const pendingLeave =
-    await hasPendingLeave(employeeId);
+  const pendingLeave = await hasPendingLeave(employeeId);
 
   if (pendingLeave) {
     throw new Error(
@@ -87,8 +53,7 @@ const createLeave = async (
     );
   }
 
-  const overlapLeave =
-    await Leave.findOne({
+  const overlapLeave = await Leave.findOne({
       employeeId,
       isDeleted: false,
       status: {
@@ -111,29 +76,17 @@ const createLeave = async (
     );
   }
 
-  const leaveCalculation =
-    await calculateLeaveDays(
-      fromDate,
-      toDate,
-      category
-    );
+  const leaveCalculation =await calculateLeaveDays(fromDate,toDate,category);
 
-  if (
-    leaveCalculation.totalLeaveDays <=
-    0
-  ) {
+  if (leaveCalculation.totalLeaveDays <=0) {
     throw new Error(
       "No leave days found after excluding weekends and holidays."
     );
   }
 
-  const totalLeaveDays =
-    leaveCalculation.totalLeaveDays;
+  const totalLeaveDays = leaveCalculation.totalLeaveDays;
 
-  if (
-    leaveDeductionType ===
-    "LEAVE_BALANCE"
-  ) {
+  if (leaveDeductionType ==="LEAVE_BALANCE") {
     if (
       Number(leaveBalanceDays) !==
       totalLeaveDays
@@ -144,41 +97,25 @@ const createLeave = async (
     }
   }
 
-  if (
-    leaveDeductionType ===
-    "SALARY"
-  ) {
-    if (
-      Number(salaryDeductionDays) !==
-      totalLeaveDays
-    ) {
+  if (leaveDeductionType ==="SALARY") {
+    if (Number(salaryDeductionDays) !==totalLeaveDays) {
       throw new Error(
         "Salary deduction days should equal total leave days."
       );
     }
   }
 
-  if (
-    leaveDeductionType === "BOTH"
-  ) {
-    if (
-      Number(leaveBalanceDays) +
-        Number(
-          salaryDeductionDays
-        ) !==
-      totalLeaveDays
-    ) {
+  if (leaveDeductionType === "BOTH") {
+    if (Number(leaveBalanceDays) +Number(salaryDeductionDays) !==totalLeaveDays) {
       throw new Error(
         "Leave Balance Days + Salary Deduction Days must equal total leave days."
       );
     }
   }
 
-  const balance =
-    await LeaveBalance.findOne({
+  const balance =await LeaveBalance.findOne({
       employeeId,
-      year:
-        new Date().getFullYear(),
+      year:new Date().getFullYear(),
       isDeleted: false,
       isActive: true,
     });
@@ -189,64 +126,34 @@ const createLeave = async (
     );
   }
 
-  if (
-    leaveDeductionType ===
-      "LEAVE_BALANCE" &&
-    balance.remainingLeaves <
-      leaveBalanceDays
-  ) {
+  if (leaveDeductionType ==="LEAVE_BALANCE" && balance.remainingLeaves < leaveBalanceDays) {
     throw new Error(
       "Insufficient leave balance."
     );
   }
 
-  if (
-    leaveDeductionType ===
-      "BOTH" &&
-    balance.remainingLeaves <
-      leaveBalanceDays
-  ) {
+  if (leaveDeductionType === "BOTH" && balance.remainingLeaves <leaveBalanceDays) { 
     throw new Error(
       "Insufficient leave balance."
     );
   }
 
-  const mentionUsers =
-    await getMentionUsers(
-      mentions
-    );
+  const mentionUsers = await getMentionUsers(mentions);
 
-  const leave =
-    await Leave.create({
+  const leave =await Leave.create({
       employeeId,
-
       fromDate,
       toDate,
-
       category,
-
-      totalCalendarDays:
-        leaveCalculation.totalCalendarDays,
-
-      totalLeaveDays:
-        leaveCalculation.totalLeaveDays,
-
-      skippedWeekendDays:
-        leaveCalculation.skippedWeekendDays,
-
-      skippedHolidayDays:
-        leaveCalculation.skippedHolidayDays,
-
+      totalCalendarDays:leaveCalculation.totalCalendarDays,
+      totalLeaveDays:leaveCalculation.totalLeaveDays,
+      skippedWeekendDays:leaveCalculation.skippedWeekendDays,
+      skippedHolidayDays:leaveCalculation.skippedHolidayDays,
       leaveDeductionType,
-
       leaveBalanceDays,
-
       salaryDeductionDays,
-
       reason: reason.trim(),
-
       attachment,
-
       mentions:
         mentionUsers.map(
           (user) => user._id
@@ -280,21 +187,9 @@ const createLeave = async (
 };
 
 
-const getMyLeaves = async (
-  employeeId,
-  query
-) => {
-  const {
-    page = 1,
-    limit = 10,
-    status,
-    year,
-  } = query;
-
-  const filter = {
-    employeeId,
-    isDeleted: false,
-  };
+  const getMyLeaves = async (employeeId,query) => {
+  const {page = 1, imit = 10, status,year,} = query;
+  const filter = {employeeId,isDeleted: false,};
 
   if (status) {
     filter.status = status;
@@ -311,16 +206,9 @@ const getMyLeaves = async (
     1
   );
 
-  const perPage = Math.max(
-    Number(limit),
-    1
-  );
-
-  const skip =
-    (currentPage - 1) * perPage;
-
-  const totalRecords =
-    await Leave.countDocuments(filter);
+  const perPage = Math.max(Number(limit),1);
+  const skip = (currentPage - 1) * perPage;
+  const totalRecords = await Leave.countDocuments(filter);
 
   const data = await Leave.find(filter)
     .populate(
@@ -353,16 +241,8 @@ const getMyLeaves = async (
   };
 };
 
-const getLeaveById = async (
-  id,
-  employeeId
-) => {
-  const leave =
-    await Leave.findOne({
-      _id: id,
-      employeeId,
-      isDeleted: false,
-    })
+const getLeaveById = async (id,employeeId) => {
+  const leave = await Leave.findOne({_id: id,employeeId,isDeleted: false,})
       .populate(
         "employeeId",
         "name employeeId role"
@@ -389,12 +269,8 @@ const getLeaveById = async (
   return leave;
 };
 
-const cancelLeave = async (
-  id,
-  employeeId
-) => {
-  const leave =
-    await Leave.findOne({
+const cancelLeave = async (id,employeeId) => {
+  const leave =await Leave.findOne({
       _id: id,
       employeeId,
       isDeleted: false,
@@ -426,18 +302,9 @@ const cancelLeave = async (
 };
 
 const getAllLeaves = async (query) => {
-  const {
-    page = 1,
-    limit = 10,
-    search = "",
-    status,
-    employeeId,
-    year,
-  } = query;
+  const {page = 1,limit = 10,search = "",status,employeeId,year,} = query;
 
-  const filter = {
-    isDeleted: false,
-  };
+  const filter = {isDeleted: false,};
 
   if (status) {
     filter.status = status;
@@ -476,21 +343,13 @@ const getAllLeaves = async (query) => {
     };
   }
 
-  const currentPage = Math.max(
-    Number(page),
-    1
-  );
+  const currentPage = Math.max(Number(page),1);
 
-  const perPage = Math.max(
-    Number(limit),
-    1
-  );
+  const perPage = Math.max(Number(limit),1);
 
-  const skip =
-    (currentPage - 1) * perPage;
+  const skip = (currentPage - 1) * perPage;
 
-  const totalRecords =
-    await Leave.countDocuments(filter);
+  const totalRecords = await Leave.countDocuments(filter);
 
   const data = await Leave.find(filter)
     .populate(
@@ -528,20 +387,14 @@ const getAllLeaves = async (query) => {
 };
 
 
-const approveLeave = async (
-  id,
-  approver
-) => {
+const approveLeave = async (id,approver) => {
   if (!canApproveLeave(approver.role)) {
     throw new Error(
       "You are not authorized to approve leave."
     );
   }
 
-  const leave = await Leave.findOne({
-    _id: id,
-    isDeleted: false,
-  });
+  const leave = await Leave.findOne({_id: id,isDeleted: false,});
 
   if (!leave) {
     throw new Error(
@@ -555,8 +408,7 @@ const approveLeave = async (
     );
   }
 
-  const balance =
-    await LeaveBalance.findOne({
+  const balance = await LeaveBalance.findOne({
       employeeId: leave.employeeId,
       year: new Date().getFullYear(),
       isDeleted: false,
@@ -570,57 +422,32 @@ const approveLeave = async (
   }
 
   // Leave Balance Validation
-  if (
-    leave.leaveDeductionType ===
-      "LEAVE_BALANCE" &&
-    balance.remainingLeaves <
-      leave.leaveBalanceDays
-  ) {
+  if (leave.leaveDeductionType ==="LEAVE_BALANCE" &&balance.remainingLeaves <leave.leaveBalanceDays) {
     throw new Error(
       "Insufficient leave balance."
     );
   }
 
-  if (
-    leave.leaveDeductionType ===
-      "BOTH" &&
-    balance.remainingLeaves <
-      leave.leaveBalanceDays
-  ) {
+  if (leave.leaveDeductionType ==="BOTH" &&balance.remainingLeaves <leave.leaveBalanceDays) {
     throw new Error(
       "Insufficient leave balance."
     );
   }
 
   // Deduct Leave Balance
-  if (
-    leave.leaveDeductionType ===
-      "LEAVE_BALANCE" ||
-    leave.leaveDeductionType ===
-      "BOTH"
-  ) {
-    balance.usedLeaves +=
-      leave.leaveBalanceDays;
+  if (leave.leaveDeductionType ==="LEAVE_BALANCE" ||leave.leaveDeductionType ==="BOTH") {
+    balance.usedLeaves +=leave.leaveBalanceDays;
 
-    balance.remainingLeaves -=
-      leave.leaveBalanceDays;
-  }
+    balance.remainingLeaves -=leave.leaveBalanceDays;}
 
   // Leave Balance History
-  if (
-    leave.leaveBalanceDays > 0
-  ) {
+  if (leave.leaveBalanceDays > 0) {
     balance.history.push({
       leaveId: leave._id,
-
       fromDate: leave.fromDate,
-
       toDate: leave.toDate,
-
       days: leave.leaveBalanceDays,
-
       approvedBy: approver._id,
-
       approvedAt: new Date(),
     });
   }
@@ -631,18 +458,11 @@ const approveLeave = async (
   ) {
     balance.salaryHistory.push({
       leaveId: leave._id,
-
       employeeId: leave.employeeId,
-
       fromDate: leave.fromDate,
-
       toDate: leave.toDate,
-
-      salaryDeductionDays:
-        leave.salaryDeductionDays,
-
+      salaryDeductionDays:leave.salaryDeductionDays,
       processedBy: null,
-
       processedAt: null,
     });
   }
@@ -651,14 +471,10 @@ const approveLeave = async (
 
   leave.status = "APPROVED";
 
-  leave.approvedBy =
-    approver._id;
+  leave.approvedBy =approver._id;
+  leave.approvedAt = new Date();
 
-  leave.approvedAt =
-    new Date();
-
-  leave.updatedBy =
-    approver._id;
+  leave.updatedBy = approver._id;
 
   await leave.save();
 
@@ -683,11 +499,7 @@ const approveLeave = async (
     );
 };
 
-const rejectLeave = async (
-  id,
-  reason,
-  approver
-) => {
+const rejectLeave = async (id,reason,approver) => {
   if (!canApproveLeave(approver.role)) {
     throw new Error(
       "You are not authorized to reject leave."
@@ -734,32 +546,23 @@ const rejectLeave = async (
     );
 };
 
-const allocateLeaveBalance = async (
-  employeeId,
-  allocatedLeaves,
-  admin
-) => {
+const allocateLeaveBalance = async (employeeId,allocatedLeaves,admin) => {
   if (!canApproveLeave(admin.role)) {
     throw new Error(
       "You are not authorized to allocate leave."
     );
   }
 
-  allocatedLeaves = Number(
-    allocatedLeaves
-  );
+  allocatedLeaves = Number(allocatedLeaves);
 
-  if (
-    isNaN(allocatedLeaves) ||
-    allocatedLeaves < 0
+  if (isNaN(allocatedLeaves) || allocatedLeaves < 0
   ) {
     throw new Error(
       "Invalid allocated leave."
     );
   }
 
-  let balance =
-    await LeaveBalance.findOne({
+  let balance = await LeaveBalance.findOne({
       employeeId,
       year: new Date().getFullYear(),
       isDeleted: false,
@@ -769,37 +572,21 @@ const allocateLeaveBalance = async (
     balance =
       await LeaveBalance.create({
         employeeId,
-
         allocatedLeaves,
-
         usedLeaves: 0,
+        remainingLeaves:allocatedLeaves,
+        year:new Date().getFullYear(),
 
-        remainingLeaves:
-          allocatedLeaves,
-
-        year:
-          new Date().getFullYear(),
-
-        lastUpdatedBy:
-          admin._id,
+        lastUpdatedBy:admin._id,
       });
 
     return balance;
   }
 
-  balance.allocatedLeaves =
-    allocatedLeaves;
+  balance.allocatedLeaves = allocatedLeaves;
 
-  balance.remainingLeaves =
-    Math.max(
-      allocatedLeaves -
-        balance.usedLeaves,
-      0
-    );
-
-  balance.lastUpdatedBy =
-    admin._id;
-
+  balance.remainingLeaves = Math.max(allocatedLeaves -balance.usedLeaves,0);
+  balance.lastUpdatedBy =admin._id;
   await balance.save();
 
   return await LeaveBalance.findById(
@@ -823,10 +610,7 @@ const allocateLeaveBalance = async (
 };
 
 
-const getLeaveBalance = async (
-  employeeId
-) => {
-  const balance =
+const getLeaveBalance = async (employeeId) => {const balance =
     await LeaveBalance.findOne({
       employeeId,
       year: new Date().getFullYear(),
