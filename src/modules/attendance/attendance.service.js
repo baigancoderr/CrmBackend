@@ -53,6 +53,63 @@ const getAttendanceEmployeeSnapshot = (user) => ({
   biometricEmpCode: user?.biometricEmpCode || "",
 });
 
+const ensureDailyAttendanceRecords = async (dateKey) => {
+  const targetDate = dateKey || getTodayDate();
+
+  const activeEmployees = await User.find({
+    isActive: true,
+  })
+    .select("employeeId biometricEmpCode name")
+    .lean();
+
+  if (activeEmployees.length === 0) {
+    return {
+      success: true,
+      date: targetDate,
+      createdCount: 0,
+      totalEmployees: 0,
+    };
+  }
+
+  const existingRecords = await Attendance.find({
+    date: targetDate,
+    employee: {
+      $in: activeEmployees.map((employee) => employee._id),
+    },
+  })
+    .select("employee")
+    .lean();
+
+  const existingEmployeeIds = new Set(
+    existingRecords.map((record) => String(record.employee))
+  );
+
+  const missingRecords = activeEmployees
+    .filter(
+      (employee) =>
+        !existingEmployeeIds.has(String(employee._id))
+    )
+    .map((employee) => ({
+      employee: employee._id,
+      date: targetDate,
+      ...getAttendanceEmployeeSnapshot(employee),
+      status: "ABSENT",
+    }));
+
+  if (missingRecords.length > 0) {
+    await Attendance.insertMany(missingRecords, {
+      ordered: false,
+    });
+  }
+
+  return {
+    success: true,
+    date: targetDate,
+    createdCount: missingRecords.length,
+    totalEmployees: activeEmployees.length,
+  };
+};
+
 const getOfficeTimes = (user, dateKey) => {
   const startTime = user?.officeTiming?.startTime || "10:00";
   const endTime = user?.officeTiming?.endTime || "19:00";
@@ -122,6 +179,35 @@ const calculateAttendanceMetrics = (
   };
 };
 
+const addPunchEvent = (attendance, event) => {
+  if (!attendance.punchEvents) {
+    attendance.punchEvents = [];
+  }
+
+  const eventTime = new Date(event.time);
+  const eventTimestamp = eventTime.getTime();
+
+  const alreadyExists = attendance.punchEvents.some((item) => {
+    const itemTime = new Date(item.time).getTime();
+
+    return (
+      item.action === event.action &&
+      item.source === event.source &&
+      itemTime === eventTimestamp
+    );
+  });
+
+  if (!alreadyExists) {
+    attendance.punchEvents.push({
+      action: event.action,
+      source: event.source,
+      time: eventTime,
+      by: event.by || null,
+      note: event.note || "",
+    });
+  }
+};
+
 const applyBiometricPunch = async (
   userId,
   punchDateTime,
@@ -159,6 +245,15 @@ const applyBiometricPunch = async (
       lateMinutes: metrics.lateMinutes,
       earlyOutMinutes: metrics.earlyOutMinutes,
       status: metrics.status,
+      punchEvents: [
+        {
+          action: "CLOCK_IN",
+          source: "BIOMETRIC",
+          time: punchDateTime,
+          by: null,
+          note: "Biometric clock in",
+        },
+      ],
     });
 
     return attendance;
@@ -171,6 +266,13 @@ const applyBiometricPunch = async (
     clockIn = punchDateTime;
     attendance.clockIn = clockIn;
     attendance.clockInSource = "BIOMETRIC";
+    addPunchEvent(attendance, {
+      action: "CLOCK_IN",
+      source: "BIOMETRIC",
+      time: punchDateTime,
+      by: null,
+      note: "Biometric clock in synced",
+    });
   }
 
   if (
@@ -183,6 +285,13 @@ const applyBiometricPunch = async (
     clockOut = punchDateTime;
     attendance.clockOut = clockOut;
     attendance.clockOutSource = "BIOMETRIC";
+    addPunchEvent(attendance, {
+      action: "CLOCK_OUT",
+      source: "BIOMETRIC",
+      time: punchDateTime,
+      by: null,
+      note: "Biometric clock out synced",
+    });
   }
 
   const metrics = calculateAttendanceMetrics(
@@ -231,7 +340,7 @@ const clockIn = async (userId) => {
       date: today,
     });
 
-  if (existingAttendance) {
+  if (existingAttendance?.clockIn) {
     throw new Error(
       "Already clocked in today"
     );
@@ -245,17 +354,53 @@ const clockIn = async (userId) => {
     today
   );
 
-  const attendance =
-    await Attendance.create({
-      employee: userId,
-      date: today,
-      ...getAttendanceEmployeeSnapshot(user),
-      clockIn: now,
-      clockInSource: "MANUAL",
-      lateMinutes: metrics.lateMinutes,
-      earlyOutMinutes: metrics.earlyOutMinutes,
-      status: metrics.status,
+  let attendance;
+
+  if (existingAttendance) {
+    existingAttendance.clockIn = now;
+    existingAttendance.clockInSource = "MANUAL";
+    existingAttendance.lateMinutes = metrics.lateMinutes;
+    existingAttendance.earlyOutMinutes = metrics.earlyOutMinutes;
+    existingAttendance.status = metrics.status;
+    existingAttendance.employeeId =
+      user.employeeId || existingAttendance.employeeId;
+    existingAttendance.employeeName =
+      user.name || existingAttendance.employeeName;
+    existingAttendance.biometricEmpCode =
+      user.biometricEmpCode ||
+      existingAttendance.biometricEmpCode;
+    addPunchEvent(existingAttendance, {
+      action: "CLOCK_IN",
+      source: "MANUAL",
+      time: now,
+      by: userId,
+      note: "Manual clock in by employee",
     });
+
+    await existingAttendance.save();
+    attendance = existingAttendance;
+  } else {
+    attendance =
+      await Attendance.create({
+        employee: userId,
+        date: today,
+        ...getAttendanceEmployeeSnapshot(user),
+        clockIn: now,
+        clockInSource: "MANUAL",
+        lateMinutes: metrics.lateMinutes,
+        earlyOutMinutes: metrics.earlyOutMinutes,
+        status: metrics.status,
+        punchEvents: [
+          {
+            action: "CLOCK_IN",
+            source: "MANUAL",
+            time: now,
+            by: userId,
+            note: "Manual clock in by employee",
+          },
+        ],
+      });
+  }
 
   return {
     success: true,
@@ -267,6 +412,11 @@ const clockIn = async (userId) => {
 
 const clockOut = async (userId) => {
   const user = await User.findById(userId);
+
+  if (!user) {
+    throw new Error("User not found");
+  }
+
   const today = getTodayDate();
 
   const attendance =
@@ -276,6 +426,12 @@ const clockOut = async (userId) => {
     });
 
   if (!attendance) {
+    throw new Error(
+      "Please clock in first"
+    );
+  }
+
+  if (!attendance.clockIn) {
     throw new Error(
       "Please clock in first"
     );
@@ -291,6 +447,13 @@ const clockOut = async (userId) => {
 
   attendance.clockOut = now;
   attendance.clockOutSource = "MANUAL";
+  addPunchEvent(attendance, {
+    action: "CLOCK_OUT",
+    source: "MANUAL",
+    time: now,
+    by: userId,
+    note: "Manual clock out by employee",
+  });
 
   const metrics = calculateAttendanceMetrics(
     attendance.clockIn,
@@ -496,7 +659,69 @@ const formatAttendanceSummary = (record) => {
         : record.shortfallMinutes || 0,
     workingMinutes: record.workingMinutes || 0,
     overtimeMinutes: record.overtimeMinutes || 0,
+    punchEvents: Array.isArray(record.punchEvents)
+      ? record.punchEvents
+      : [],
   };
+};
+
+const MONTH_LABELS = [
+  "JANUARY",
+  "FEBRUARY",
+  "MARCH",
+  "APRIL",
+  "MAY",
+  "JUNE",
+  "JULY",
+  "AUGUST",
+  "SEPTEMBER",
+  "OCTOBER",
+  "NOVEMBER",
+  "DECEMBER",
+];
+
+const formatTimePart = (dateValue) => {
+  if (!dateValue) {
+    return "";
+  }
+
+  const value = new Date(dateValue);
+  const hours = String(value.getHours()).padStart(2, "0");
+  const minutes = String(value.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+};
+
+const formatMonthlySheetCell = (record, isWeekend) => {
+  if (!record) {
+    return isWeekend ? "" : "A";
+  }
+
+  if (record.status === "WEEK_OFF") {
+    return "WEEK OFF";
+  }
+
+  if (record.status === "LEAVE") {
+    return "LEAVE";
+  }
+
+  if (record.status === "ABSENT") {
+    return "A";
+  }
+
+  if (record.status === "HALF_DAY") {
+    return "HALF DAY";
+  }
+
+  const hasClockIn = Boolean(record.clockIn);
+  const hasClockOut = Boolean(record.clockOut);
+
+  if (hasClockIn || hasClockOut) {
+    const inLabel = hasClockIn ? formatTimePart(record.clockIn) : "";
+    const outLabel = hasClockOut ? formatTimePart(record.clockOut) : "";
+    return `P (IN-${inLabel || "--"}) (OUT-${outLabel || "--"})`;
+  }
+
+  return "P";
 };
 
 const getAttendanceDashboardDetails = async (dateKey) => {
@@ -868,6 +1093,88 @@ const getEmployeeAttendance =
     };
   };
 
+const getMonthlyTeamSheet = async (month, year) => {
+  if (!month || !year || month < 1 || month > 12) {
+    throw new Error("Valid month and year are required");
+  }
+
+  const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const monthEnd = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+
+  const activeEmployees = await User.find({
+    isActive: true,
+  })
+    .select("employeeId biometricEmpCode name designation department")
+    .sort({ name: 1 })
+    .lean();
+
+  const employeeIds = activeEmployees.map((employee) => employee._id);
+
+  const monthlyRecords = await Attendance.find({
+    employee: {
+      $in: employeeIds,
+    },
+    date: {
+      $gte: monthStart,
+      $lte: monthEnd,
+    },
+  })
+    .select("employee date status clockIn clockOut")
+    .lean();
+
+  const attendanceMap = new Map();
+
+  monthlyRecords.forEach((record) => {
+    const key = `${String(record.employee)}-${record.date}`;
+    attendanceMap.set(key, record);
+  });
+
+  const rows = Array.from({ length: lastDay }, (_, index) => {
+    const dayNumber = index + 1;
+    const date = `${year}-${String(month).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
+    const dateValue = new Date(`${date}T00:00:00`);
+    const day = dateValue
+      .toLocaleDateString("en-US", {
+        weekday: "short",
+      })
+      .toUpperCase();
+
+    const weekday = dateValue.getDay();
+    const isWeekend = weekday === 0 || weekday === 6;
+
+    const cells = activeEmployees.map((employee) => {
+      const key = `${String(employee._id)}-${date}`;
+      const record = attendanceMap.get(key);
+      return formatMonthlySheetCell(record, isWeekend);
+    });
+
+    return {
+      date,
+      day,
+      cells,
+    };
+  });
+
+  return {
+    success: true,
+    data: {
+      month,
+      year,
+      monthLabel: MONTH_LABELS[month - 1],
+      employees: activeEmployees.map((employee) => ({
+        _id: employee._id,
+        employeeId: employee.employeeId || "",
+        biometricEmpCode: employee.biometricEmpCode || "",
+        name: employee.name || "",
+        designation: employee.designation || "",
+        department: employee.department || "",
+      })),
+      rows,
+    },
+  };
+};
+
 const manualUpdateAttendance = async (
   attendanceId,
   body,
@@ -881,8 +1188,8 @@ const manualUpdateAttendance = async (
 
   const { clockIn, clockOut, reason } = body;
 
-  if (!clockIn || !clockOut) {
-    throw new Error("Clock In and Clock Out are required");
+  if (!clockIn && !clockOut) {
+    throw new Error("Clock In or Clock Out is required");
   }
 
   if (!reason) {
@@ -892,19 +1199,38 @@ const manualUpdateAttendance = async (
   const attendanceDate = attendance.date;
   const user = await User.findById(attendance.employee);
 
-  const clockInDate = new Date(`${attendanceDate}T${clockIn}:00`);
-  const clockOutDate = new Date(`${attendanceDate}T${clockOut}:00`);
+  const existingClockIn = attendance.clockIn || null;
+  const existingClockOut = attendance.clockOut || null;
 
-  if (clockOutDate <= clockInDate) {
+  const nextClockIn = clockIn
+    ? new Date(`${attendanceDate}T${clockIn}:00`)
+    : existingClockIn;
+  const nextClockOut = clockOut
+    ? new Date(`${attendanceDate}T${clockOut}:00`)
+    : existingClockOut;
+
+  if (!nextClockIn) {
+    throw new Error("Clock In is required before setting Clock Out");
+  }
+
+  if (nextClockOut && nextClockOut <= nextClockIn) {
     throw new Error("Clock Out must be greater than Clock In");
   }
 
-  attendance.clockIn = clockInDate;
-  attendance.clockOut = clockOutDate;
+  attendance.clockIn = nextClockIn;
+  attendance.clockOut = nextClockOut;
+
+  if (clockIn) {
+    attendance.clockInSource = "MANUAL";
+  }
+
+  if (clockOut) {
+    attendance.clockOutSource = "MANUAL";
+  }
 
   const metrics = calculateAttendanceMetrics(
-    clockInDate,
-    clockOutDate,
+    nextClockIn,
+    nextClockOut,
     user,
     attendanceDate
   );
@@ -924,6 +1250,26 @@ const manualUpdateAttendance = async (
   attendance.updateReason = reason;
   attendance.isManuallyUpdated = true;
 
+  if (clockIn) {
+    addPunchEvent(attendance, {
+      action: "CLOCK_IN",
+      source: "MANUAL",
+      time: nextClockIn,
+      by: updatedBy,
+      note: `Manual update: ${reason}`,
+    });
+  }
+
+  if (clockOut && nextClockOut) {
+    addPunchEvent(attendance, {
+      action: "CLOCK_OUT",
+      source: "MANUAL",
+      time: nextClockOut,
+      by: updatedBy,
+      note: `Manual update: ${reason}`,
+    });
+  }
+
   await attendance.save();
 
   return {
@@ -934,6 +1280,7 @@ const manualUpdateAttendance = async (
 };
 
 module.exports = {
+  ensureDailyAttendanceRecords,
   clockIn,
   clockOut,
   getTodayAttendance,
@@ -943,6 +1290,7 @@ module.exports = {
   getAttendanceDashboardDetails,
   getMyAttendanceDashboard,
   getEmployeeAttendance,
+  getMonthlyTeamSheet,
   manualUpdateAttendance,
   applyBiometricPunch,
   parseBiometricPunchDate,

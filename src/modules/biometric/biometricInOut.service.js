@@ -6,6 +6,9 @@ const {
   normalizeEmpCode,
 } = require("../../utils/biometricEmpCode");
 
+const isBiometricFetchEnabled = () =>
+  process.env.ETIME_FETCH_ENABLED === "true";
+
 const getLocalDateKey = () => {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Kolkata",
@@ -98,6 +101,16 @@ const fetchBiometricInOutForUser = async (
 ) => {
   const targetDate = dateKey || getLocalDateKey();
 
+  if (!isBiometricFetchEnabled()) {
+    return {
+      date: targetDate,
+      records: [],
+      total: 0,
+      error:
+        "Biometric fetch is disabled. Manual attendance mode is active.",
+    };
+  }
+
   const user = await User.findById(userId)
     .select(
       "employeeId biometricEmpCode name designation department profilePhoto"
@@ -151,6 +164,16 @@ const fetchBiometricInOutForUser = async (
 
 const fetchBiometricInOutRecords = async (dateKey) => {
   const targetDate = dateKey || getLocalDateKey();
+
+  if (!isBiometricFetchEnabled()) {
+    return {
+      date: targetDate,
+      records: [],
+      total: 0,
+      error:
+        "Biometric fetch is disabled. Manual attendance mode is active.",
+    };
+  }
 
   const employees = await User.find({
     isActive: true,

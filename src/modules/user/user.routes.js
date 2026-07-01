@@ -13,14 +13,53 @@ router.get("/profile", authMiddleware, userController.getProfile);
 
 router.put("/profile", authMiddleware, userController.updateProfile);
 
-router.get("/", authMiddleware, userController.getAllUsers);
+router.get(
+  "/",
+  authMiddleware,
+  roleMiddleware(...ADMIN_ROLES),
+  userController.getAllUsers
+);
 
-router.get("/dashboard-counts",authMiddleware,userController.getDashboardCounts);
+router.get(
+  "/dashboard-counts",
+  authMiddleware,
+  roleMiddleware(...ADMIN_ROLES),
+  userController.getDashboardCounts
+);
 
-router.patch("/biometric-code/:id",authMiddleware,roleMiddleware(...ADMIN_ROLES),userController.updateBiometricEmpCode);
+router.patch(
+  "/biometric-code/:id",
+  authMiddleware,
+  roleMiddleware(...ADMIN_ROLES),
+  userController.updateBiometricEmpCode
+);
 
-router.patch("/status/:id", authMiddleware, userController.updateUserStatus);
+router.patch(
+  "/status/:id",
+  authMiddleware,
+  roleMiddleware(...ADMIN_ROLES),
+  userController.updateUserStatus
+);
 
-router.get("/:id", authMiddleware, userController.getUserById);
+router.patch(
+  "/:id",
+  authMiddleware,
+  roleMiddleware(...ADMIN_ROLES),
+  userController.updateUserById
+);
+
+router.delete(
+  "/:id",
+  authMiddleware,
+  roleMiddleware(...ADMIN_ROLES),
+  userController.deleteUserById
+);
+
+router.get(
+  "/:id",
+  authMiddleware,
+  roleMiddleware(...ADMIN_ROLES),
+  userController.getUserById
+);
 
 module.exports = router;

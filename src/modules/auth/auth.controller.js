@@ -50,9 +50,42 @@ const requestPasswordReset = async (req, res) => {
   }
 };
 
+const forgotPassword = async (req, res) => {
+  try {
+    const result = await authService.forgotPassword(req.body);
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 const getPasswordResetRequests = async (req, res) => {
   try {
     const result = await authService.getPasswordResetRequests();
+
+    return res.status(200).json({
+      success: true,
+      count: result.length,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const getPasswordResetHistory = async (req, res) => {
+  try {
+    const result = await authService.getPasswordResetHistory();
 
     return res.status(200).json({
       success: true,
@@ -141,8 +174,10 @@ module.exports = {
   changePassword,
   resetPassword,
   requestPasswordReset,
+  forgotPassword,
   getPasswordResetRequests,
+  getPasswordResetHistory,
   rejectPasswordReset,
   refreshToken,
-  logout
+  logout,
 };

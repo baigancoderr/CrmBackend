@@ -1,5 +1,35 @@
 const mongoose = require("mongoose");
 
+const punchEventSchema = new mongoose.Schema(
+  {
+    action: {
+      type: String,
+      enum: ["CLOCK_IN", "CLOCK_OUT"],
+      required: true,
+    },
+    source: {
+      type: String,
+      enum: ["MANUAL", "BIOMETRIC"],
+      required: true,
+    },
+    time: {
+      type: Date,
+      required: true,
+    },
+    by: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    note: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+  },
+  { _id: false }
+);
+
 const attendanceSchema = new mongoose.Schema(
   {
     employee: {
@@ -112,6 +142,11 @@ isManuallyUpdated: {
     remarks: {
       type: String,
       default: "",
+    },
+
+    punchEvents: {
+      type: [punchEventSchema],
+      default: [],
     },
   },
   {

@@ -10,6 +10,9 @@ const {
   normalizeEmpCode,
 } = require("../../utils/biometricEmpCode");
 
+const isBiometricSyncEnabled = () =>
+  process.env.ETIME_SYNC_ENABLED === "true";
+
 const getAttendanceHelpers = () => {
   return require("../attendance/attendance.service");
 };
@@ -33,6 +36,23 @@ const getSyncState = async () => {
 };
 
 const syncBiometricPunches = async () => {
+  if (!isBiometricSyncEnabled()) {
+    const state = await getSyncState();
+    state.lastSyncedAt = new Date();
+    state.lastSyncStatus = "IDLE";
+    state.lastSyncMessage =
+      "Biometric sync is disabled. Manual attendance mode is active.";
+    await state.save();
+
+    return {
+      success: true,
+      processedCount: 0,
+      skippedCount: 0,
+      lastMaxRecord: state.lastMaxRecord,
+      message: state.lastSyncMessage,
+    };
+  }
+
   const state = await getSyncState();
   const lastRecord = state.lastMaxRecord;
 

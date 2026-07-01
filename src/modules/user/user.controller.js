@@ -104,6 +104,43 @@ const updateUserStatus = async (req, res) => {
     }
 };
 
+const updateUserById = async (req, res) => {
+    try {
+        const result = await userService.updateUserById(
+            req.user,
+            req.params.id,
+            req.body
+        );
+
+        return res.status(200).json({
+            success: true,
+            message: result.message,
+            data: result.data,
+        });
+    } catch (error) {
+        return res.status(400).json({
+            success: false,
+            message: error.message,
+        });
+    }
+};
+
+const deleteUserById = async (req, res) => {
+    try {
+        const result = await userService.deleteUserById(req.user, req.params.id);
+
+        return res.status(200).json({
+            success: true,
+            message: result.message,
+        });
+    } catch (error) {
+        return res.status(400).json({
+            success: false,
+            message: error.message,
+        });
+    }
+};
+
 const getDashboardCounts = async (req,res) => {
     try {
         const result =await userService.getDashboardCounts();
@@ -148,6 +185,8 @@ module.exports = {
     getAllUsers,
     getUserById,
     updateUserStatus,
+    updateUserById,
+    deleteUserById,
     updateBiometricEmpCode,
     getDashboardCounts,
 };

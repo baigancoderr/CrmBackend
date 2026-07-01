@@ -232,6 +232,11 @@ passwordResetRequest: {
     default: "NONE",
   },
   reason: String,
+  source: {
+    type: String,
+    enum: ["LOGIN", "SETTINGS"],
+    default: "SETTINGS",
+  },
   requestedAt: Date,
   reviewedAt: Date,
   reviewedBy: {
@@ -245,10 +250,16 @@ passwordResetHistory: [
   {
     status: {
       type: String,
-      enum: ["APPROVED", "REJECTED"],
+      enum: ["PENDING", "APPROVED", "REJECTED"],
     },
 
     reason: String,
+
+    source: {
+      type: String,
+      enum: ["LOGIN", "SETTINGS"],
+      default: "SETTINGS",
+    },
 
     requestedAt: Date,
 
@@ -261,7 +272,6 @@ passwordResetHistory: [
 
     remarks: String,
 
-    temporaryPassword: String,
   },
 ],
 
