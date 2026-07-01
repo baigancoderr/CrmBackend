@@ -12,5 +12,7 @@ router.use("/extrawork", require("../modules/extra-work/extraWork.routes"));
 
 router.use("/holiday", require("../modules/holiday/holiday.routes"));
 
+router.use("/leave", require("../modules/leave/leave.routes"));
+
 
 module.exports = router;
