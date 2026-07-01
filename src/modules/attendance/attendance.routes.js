@@ -45,5 +45,6 @@ router.get(
 );
 
 router.patch("/manual-update/:id", authMiddleware, roleMiddleware(...ADMIN_ROLES), attendanceController.manualUpdateAttendance);
+router.patch("/revoke-clock-out/:id", authMiddleware, roleMiddleware(...ADMIN_ROLES), attendanceController.revokeClockOut);
 
 module.exports = router;

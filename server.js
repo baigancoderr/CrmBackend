@@ -12,7 +12,7 @@ const routes = require("./src/routes");
 const app = express();
 const PORT = process.env.PORT || 5000;
 const isBiometricSyncEnabled =
-  process.env.ETIME_SYNC_ENABLED === "true";
+  process.env.ETIME_SYNC_ENABLED !== "false";
 
 // Middlewares
 app.use(cors());
@@ -92,7 +92,7 @@ app.use("/api", routes);
       );
     } else if (!isBiometricSyncEnabled) {
       console.warn(
-        "Biometric sync is turned off (ETIME_SYNC_ENABLED != true). Manual attendance mode is active."
+        "Biometric sync is turned off (ETIME_SYNC_ENABLED=false). Manual attendance mode is active."
       );
     } else {
       console.warn(

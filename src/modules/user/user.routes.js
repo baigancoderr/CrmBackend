@@ -21,6 +21,12 @@ router.get(
 );
 
 router.get(
+  "/team-list",
+  authMiddleware,
+  userController.getVisibleTeamMembers
+);
+
+router.get(
   "/dashboard-counts",
   authMiddleware,
   roleMiddleware(...ADMIN_ROLES),

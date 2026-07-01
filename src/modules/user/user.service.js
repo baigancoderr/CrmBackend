@@ -301,6 +301,66 @@ const getAllUsers = async () => {
     return users;
 };
 
+const getVisibleTeamMembers = async (currentUser) => {
+    const currentUserRecord = await User.findById(currentUser.id).select(
+        "department manager teamLeader"
+    );
+
+    if (!currentUserRecord) {
+        throw new Error("User not found");
+    }
+
+    const managerId = currentUserRecord.manager
+        ? String(currentUserRecord.manager)
+        : "";
+    const teamLeaderId = currentUserRecord.teamLeader
+        ? String(currentUserRecord.teamLeader)
+        : "";
+
+    const users = await User.find({
+        isActive: true,
+        _id: { $ne: currentUser.id },
+    })
+        .select(
+            "_id employeeId name firstName lastName role designation department profilePhoto phone email shift joiningDate officeLocation isActive manager teamLeader"
+        )
+        .sort({ name: 1 })
+        .lean();
+
+    // Expose only common employee directory details for all authenticated users.
+    return users.map((user) => {
+        const userManagerId = user.manager ? String(user.manager) : "";
+        const userTeamLeaderId = user.teamLeader ? String(user.teamLeader) : "";
+        const sameDepartment =
+            Boolean(currentUserRecord.department) &&
+            user.department === currentUserRecord.department;
+        const sameReportingLine =
+            (managerId && userManagerId === managerId) ||
+            (teamLeaderId && userTeamLeaderId === teamLeaderId);
+
+        return {
+            _id: user._id,
+            employeeId: user.employeeId || "",
+            name: user.name,
+            firstName: user.firstName || "",
+            lastName: user.lastName || "",
+            role: user.role,
+            designation: user.designation || "",
+            department: user.department || "",
+            profilePhoto: user.profilePhoto || "",
+            phone: user.phone || "",
+            email: user.email,
+            shift: user.shift || "",
+            officeLocation: user.officeLocation || "",
+            joiningDate: user.joiningDate || null,
+            birthday: null,
+            isActive: Boolean(user.isActive),
+            isSameDepartment: Boolean(sameDepartment),
+            isSameReportingLine: Boolean(sameReportingLine),
+        };
+    });
+};
+
 const getUserById = async (userId) => {
     const user = await User.findById(userId)
         .select("-password")
@@ -666,6 +726,7 @@ module.exports = {
     getProfile,
     updateProfile,
     getAllUsers,
+    getVisibleTeamMembers,
      getUserById,
     updateUserStatus,
     updateUserById,
