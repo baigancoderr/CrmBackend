@@ -1,5 +1,7 @@
 const bcrypt = require("bcryptjs");
 const User = require("./user.model");
+const fs = require("fs");
+const path = require("path");
 const {
     normalizeBiometricEmpCode,
 } = require("../../utils/biometricEmpCode");
@@ -253,12 +255,29 @@ const updateProfile = async (userId,body) => {
         user.gender = gender;
     }
 
+  if (profilePhoto !== undefined) {
+
     if (
-        profilePhoto !== undefined
+        user.profilePhoto &&
+        fs.existsSync(
+            path.join(
+                __dirname,
+                "../../",
+                user.profilePhoto
+            )
+        )
     ) {
-        user.profilePhoto =
-            profilePhoto;
+        fs.unlinkSync(
+            path.join(
+                __dirname,
+                "../../",
+                user.profilePhoto
+            )
+        );
     }
+
+    user.profilePhoto = profilePhoto;
+}
 
     if (
         addressInfo !== undefined
@@ -277,6 +296,31 @@ const updateProfile = async (userId,body) => {
             ...socialLinks,
         };
     }
+
+    await user.save();
+
+    return user;
+};
+
+const updateProfilePhoto = async (userId, profilePhoto) => {
+    const user = await User.findById(userId);
+
+    if (!user) {
+        throw new Error("User not found");
+    }
+
+    if (
+        user.profilePhoto &&
+        fs.existsSync(
+            path.join(__dirname, "../../", user.profilePhoto)
+        )
+    ) {
+        fs.unlinkSync(
+            path.join(__dirname, "../../", user.profilePhoto)
+        );
+    }
+
+    user.profilePhoto = profilePhoto;
 
     await user.save();
 
@@ -665,8 +709,9 @@ module.exports = {
     createUser,
     getProfile,
     updateProfile,
+    updateProfilePhoto,
     getAllUsers,
-     getUserById,
+    getUserById,
     updateUserStatus,
     updateUserById,
     deleteUserById,

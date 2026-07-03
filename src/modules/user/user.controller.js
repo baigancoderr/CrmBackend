@@ -1,4 +1,6 @@
 const userService = require("./user.service");
+const fs = require("fs");
+const path = require("path");
 
 const createUser = async (req, res) => {
     try {
@@ -38,12 +40,54 @@ const getProfile = async (req, res) => {
 
 const updateProfile = async (req, res) => {
     try {
-        const result =await userService.updateProfile(req.user.id,req.body);
+
+        if (req.file) {
+            req.body.profilePhoto =
+                `/uploads/employees/${req.file.filename}`;
+        }
+
+        const result =
+            await userService.updateProfile(
+                req.user.id,
+                req.body
+            );
 
         return res.status(200).json({
             success: true,
             message:
                 "Profile Updated Successfully",
+            data: result,
+        });
+
+    } catch (error) {
+
+        return res.status(400).json({
+            success: false,
+            message: error.message,
+        });
+
+    }
+};
+
+const updateProfilePhoto = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({
+                success: false,
+                message: "Profile photo file is required",
+            });
+        }
+
+        const profilePhoto = `/uploads/employees/${req.file.filename}`;
+
+        const result = await userService.updateProfilePhoto(
+            req.user.id,
+            profilePhoto
+        );
+
+        return res.status(200).json({
+            success: true,
+            message: "Profile photo updated successfully",
             data: result,
         });
     } catch (error) {
@@ -180,8 +224,9 @@ const updateBiometricEmpCode = async (req, res) => {
 
 module.exports = {
     createUser,
-    getProfile, 
+    getProfile,
     updateProfile,
+    updateProfilePhoto,
     getAllUsers,
     getUserById,
     updateUserStatus,
