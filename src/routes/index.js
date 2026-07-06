@@ -14,5 +14,7 @@ router.use("/holiday", require("../modules/holiday/holiday.routes"));
 
 router.use("/leave", require("../modules/leave/leave.routes"));
 
+router.use("/daily-work-report", require("../modules/daily-work-report/dailyWorkReport.routes"));
+
 
 module.exports = router;

@@ -4,6 +4,8 @@ const User = require("../user/user.model");
 
 const {calculateLeaveDays,hasPendingLeave,getMentionUsers,canApproveLeave,} = require("./leave.helper");
 
+const LEAVE_ADMIN_ROLES = ["SUPER_ADMIN", "HR"];
+
 const createLeave = async (body,employeeId) => {
   const {fromDate,toDate,category = "FULL_DAY",reason,attachment = "",mentions = [],
     leaveDeductionType,
@@ -188,7 +190,7 @@ const createLeave = async (body,employeeId) => {
 
 
   const getMyLeaves = async (employeeId,query) => {
-  const {page = 1, imit = 10, status,year,} = query;
+  const {page = 1, limit = 10, status,year,} = query;
   const filter = {employeeId,isDeleted: false,};
 
   if (status) {
@@ -610,13 +612,45 @@ const allocateLeaveBalance = async (employeeId,allocatedLeaves,admin) => {
 };
 
 
-const getLeaveBalance = async (employeeId) => {const balance =
-    await LeaveBalance.findOne({
+const getLeaveBalance = async (
+  employeeId,
+  currentUser
+) => {
+  const isAdmin = LEAVE_ADMIN_ROLES.includes(
+    currentUser.role
+  );
+
+  // Employee can view only own balance. HR/Super Admin can view anyone's.
+  if (
+    !isAdmin &&
+    String(currentUser.id) !==
+      String(employeeId)
+  ) {
+    throw new Error(
+      "You are not authorized to view this leave balance."
+    );
+  }
+
+  let balance = await LeaveBalance.findOne({
       employeeId,
       year: new Date().getFullYear(),
       isDeleted: false,
       isActive: true,
-    })
+    });
+
+  // If HR has not allocated leaves yet, expose a default zero balance
+  // instead of throwing an error so employee screens can still render.
+  if (!balance) {
+    balance = await LeaveBalance.create({
+      employeeId,
+      allocatedLeaves: 0,
+      usedLeaves: 0,
+      remainingLeaves: 0,
+      year: new Date().getFullYear(),
+    });
+  }
+
+  return await LeaveBalance.findById(balance._id)
       .populate(
         "history.leaveId"
       )
@@ -628,14 +662,6 @@ const getLeaveBalance = async (employeeId) => {const balance =
         "lastUpdatedBy",
         "name employeeId role"
       );
-
-  if (!balance) {
-    throw new Error(
-      "Leave balance not found."
-    );
-  }
-
-  return balance;
 };
 
 const completeLeave = async () => {

@@ -240,13 +240,17 @@ No body required. Returns a one-time `temporaryPassword` in the response (not st
 
 ```json
 {
+  "date": "2026-07-02",
+  "employeeId": "<employeeMongoId>",
   "clockIn": "10:30",
   "clockOut": "19:00",
   "reason": "Missed biometric punch"
 }
 ```
 
-At least one of `clockIn` or `clockOut` is required. `reason` is required.
+`:id` is the attendance record MongoDB `_id`, or employee MongoDB `_id` when no attendance record exists yet.
+
+At least one of `clockIn` or `clockOut` is required. `reason` and `date` are required when updating or creating attendance for a specific day. `employeeId` helps resolve the employee when attendance record does not exist yet.
 
 ### Revoke clock out — `PATCH /attendance/revoke-clock-out/:id`
 
@@ -262,6 +266,25 @@ Behavior:
 - Sets `clockOut` to `null`
 - Recalculates attendance metrics (`workingMinutes`, `overtimeMinutes`, `shortfallMinutes`, `earlyOutMinutes`, `status`)
 - Saves audit details (`updatedBy`, `updateReason`, `isManuallyUpdated`)
+
+### Attendance status rules
+
+**Check-in (default office start 10:00 AM, 20-minute grace):**
+
+| Check-In Time | Status |
+|---------------|--------|
+| 10:00 AM – 10:20 AM | `PRESENT` |
+| After 10:20 AM | `LATE` |
+
+**Check-out (default office end 7:00 PM, half-day cutoff 4:00 PM):**
+
+| Check-Out Time | Status |
+|----------------|--------|
+| Before 4:00 PM | `HALF_DAY` |
+| 4:00 PM – 6:59 PM | `EARLY_LEAVE` |
+| 7:00 PM or later | `PRESENT` or `LATE` (from check-in) |
+
+Status values: `PRESENT`, `LATE`, `HALF_DAY`, `EARLY_LEAVE`, `ABSENT`, `WEEK_OFF`, `LEAVE`
 
 ---
 
@@ -383,6 +406,87 @@ Each holiday item includes computed fields: `isMultiDay`, `totalWorkingDays`
 
 ---
 
+## Leave (`/leave`)
+
+| Method | Endpoint | Description | Access |
+|--------|----------|-------------|--------|
+| `POST` | `/leave/apply` | Apply for leave | Authenticated |
+| `GET` | `/leave/my` | Get my leave list | Authenticated |
+| `GET` | `/leave/:id` | Get my leave details by ID | Authenticated |
+| `GET` | `/leave` | Get all leave requests (paginated/filterable) | Authenticated |
+| `PATCH` | `/leave/cancel/:id` | Cancel pending leave | Authenticated |
+| `PATCH` | `/leave/approve/:id` | Approve leave request | HR, Project Manager, Super Admin |
+| `PATCH` | `/leave/reject/:id` | Reject leave request | HR, Project Manager, Super Admin |
+| `GET` | `/leave/balance/:employeeId` | Get leave balance by employee | Authenticated (self), HR/Super Admin (any employee) |
+| `PATCH` | `/leave/balance/:employeeId` | Allocate/update leave balance | HR, Super Admin |
+| `PATCH` | `/leave/complete` | Mark past approved leaves as completed | HR, Super Admin |
+
+### Apply leave — `POST /leave/apply`
+
+```json
+{
+  "fromDate": "2026-07-01",
+  "toDate": "2026-07-03",
+  "category": "FULL_DAY",
+  "reason": "Family function",
+  "attachment": "",
+  "mentions": ["<userId1>", "<userId2>"],
+  "leaveDeductionType": "LEAVE_BALANCE",
+  "leaveBalanceDays": 3,
+  "salaryDeductionDays": 0
+}
+```
+
+Validation/business rules:
+- `fromDate`, `toDate`, `reason`, `leaveDeductionType` are required
+- `category` values: `FULL_DAY`, `HALF_DAY` (default: `FULL_DAY`)
+- `leaveDeductionType` values: `LEAVE_BALANCE`, `SALARY`, `BOTH`
+- If deduction type is `LEAVE_BALANCE`, `leaveBalanceDays` must equal calculated total leave days
+- If deduction type is `SALARY`, `salaryDeductionDays` must equal calculated total leave days
+- If deduction type is `BOTH`, `leaveBalanceDays + salaryDeductionDays` must equal calculated total leave days
+- Weekends and active holidays are excluded from leave-day calculation
+- User can have only one `PENDING` leave at a time
+- Overlapping non-cancelled/non-rejected leaves are not allowed
+
+### My leaves — `GET /leave/my`
+
+**Query params:** `page` (default: 1), `limit` (default: 10), `status`, `year`
+
+### All leaves — `GET /leave`
+
+**Query params:** `page` (default: 1), `limit` (default: 10), `search`, `status`, `employeeId`, `year`
+
+### Reject leave — `PATCH /leave/reject/:id`
+
+```json
+{
+  "reason": "Project critical timeline"
+}
+```
+
+`reason` is optional.
+
+### Allocate leave balance — `PATCH /leave/balance/:employeeId`
+
+```json
+{
+  "allocatedLeaves": 18
+}
+```
+
+`allocatedLeaves` must be a non-negative number.
+
+### Leave balance access — `GET /leave/balance/:employeeId`
+
+- Employee can fetch only own balance (`employeeId` must match logged-in user).
+- HR and Super Admin can fetch any employee balance.
+
+### Complete leaves — `PATCH /leave/complete`
+
+No body required. Manual API (admin-triggered) that marks `APPROVED` leaves as `COMPLETED` when `toDate` is before today.
+
+---
+
 ## Roles
 
 | Role | Value |
@@ -406,6 +510,7 @@ Each holiday item includes computed fields: `isMultiDay`, `totalWorkingDays`
 | Biometric | `/biometric` |
 | Extra Work | `/extrawork` |
 | Holidays | `/holiday` |
+| Leave | `/leave` |
 
 ---
 

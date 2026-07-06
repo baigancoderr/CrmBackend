@@ -98,7 +98,12 @@ const getMentionUsers = async (mentionIds = []) => {
     return [];
   }
 
-  const allowedRoles = ["HR","TL","MANAGER","SUPER_ADMIN",];
+  const allowedRoles = [
+    "HR",
+    "TL",
+    "PROJECT_MANAGER",
+    "SUPER_ADMIN",
+  ];
 
   const users = await User.find({
     _id: {
@@ -115,18 +120,22 @@ const getMentionUsers = async (mentionIds = []) => {
     users.length !== mentionIds.length
   ) {
     throw new Error(
-      "Only HR, TL, Manager and Super Admin can be mentioned."
+      "Only HR, TL, Project Manager and Super Admin can be mentioned."
     );
   }
 
   return users;
 };
 
-const APPROVER_ROLES = ["HR","MANAGER","SUPER_ADMIN",];
+const APPROVER_ROLES = [
+  "HR",
+  "PROJECT_MANAGER",
+  "SUPER_ADMIN",
+];
 
 
 const canApproveLeave = (role) => {
-  return ["HR", "MANAGER", "SUPER_ADMIN"].includes(role);
+  return APPROVER_ROLES.includes(role);
 };
 
 module.exports = {
