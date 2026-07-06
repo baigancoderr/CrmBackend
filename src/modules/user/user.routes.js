@@ -1,9 +1,12 @@
 const router = require("express").Router();
 
+
+
 const userController = require("./user.controller");
 
 const authMiddleware = require("../../middleware/auth.middleware");
 const roleMiddleware = require("../../middleware/role.middleware");
+const upload = require("../../middleware/upload.middleware");
 
 const ADMIN_ROLES = ["SUPER_ADMIN", "HR"];
 
@@ -11,7 +14,18 @@ router.post("/create", authMiddleware, userController.createUser);
 
 router.get("/profile", authMiddleware, userController.getProfile);
 
-router.put("/profile", authMiddleware, userController.updateProfile);
+// router.put("/profile", authMiddleware, userController.updateProfile);
+
+
+
+router.put(
+  "/profile/photo",
+  authMiddleware,
+  upload.single("profilePhoto"),
+  userController.updateProfilePhoto
+);
+
+router.put("/profile",authMiddleware,upload.single("profilePhoto"),userController.updateProfile);
 
 router.get(
   "/",
