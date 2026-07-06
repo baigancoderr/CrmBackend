@@ -163,7 +163,8 @@ const getLeaveBalance = async (req, res) => {
   try {
     const balance =
       await leaveService.getLeaveBalance(
-        req.params.employeeId
+        req.params.employeeId,
+        req.user
       );
 
     return res.status(200).json({

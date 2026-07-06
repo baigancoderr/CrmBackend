@@ -110,16 +110,36 @@ const ensureDailyAttendanceRecords = async (dateKey) => {
   };
 };
 
+// Attendance status rules:
+// Check-in: 10:00–10:20 = Present, after 10:20 = Late
+// Check-out: before 16:00 = Half Day, 16:00–18:59 = Early Leave, 19:00+ = Normal checkout
+const ATTENDANCE_RULES = {
+  LATE_GRACE_MINUTES: 20,
+  HALF_DAY_CHECKOUT_TIME: "16:00",
+};
+
 const getOfficeTimes = (user, dateKey) => {
   const startTime = user?.officeTiming?.startTime || "10:00";
   const endTime = user?.officeTiming?.endTime || "19:00";
+  const halfDayCutoff =
+    user?.officeTiming?.halfDayCutoff ||
+    ATTENDANCE_RULES.HALF_DAY_CHECKOUT_TIME;
 
   const officeStart = new Date(`${dateKey}T${startTime}:00`);
   const officeEnd = new Date(`${dateKey}T${endTime}:00`);
+  const lateGraceEnd = new Date(
+    officeStart.getTime() +
+      ATTENDANCE_RULES.LATE_GRACE_MINUTES * 60000
+  );
+  const halfDayCutoffTime = new Date(
+    `${dateKey}T${halfDayCutoff}:00`
+  );
 
   return {
     officeStart,
     officeEnd,
+    lateGraceEnd,
+    halfDayCutoffTime,
   };
 };
 
@@ -129,10 +149,11 @@ const calculateAttendanceMetrics = (
   user,
   dateKey
 ) => {
-  const { officeStart, officeEnd } = getOfficeTimes(
-    user,
-    dateKey
-  );
+  const {
+    officeEnd,
+    lateGraceEnd,
+    halfDayCutoffTime,
+  } = getOfficeTimes(user, dateKey);
 
   let lateMinutes = 0;
   let overtimeMinutes = 0;
@@ -140,9 +161,10 @@ const calculateAttendanceMetrics = (
   let workingMinutes = 0;
   let status = "PRESENT";
 
-  if (clockInDate > officeStart) {
+  // Check-in: Present within grace window, Late after 10:20 AM
+  if (clockInDate > lateGraceEnd) {
     lateMinutes = Math.floor(
-      (clockInDate - officeStart) / 60000
+      (clockInDate - lateGraceEnd) / 60000
     );
     status = "LATE";
   }
@@ -164,9 +186,13 @@ const calculateAttendanceMetrics = (
       );
     }
 
-    if (workingMinutes < 240) {
+    // Check-out status takes priority once employee has clocked out
+    if (clockOutDate < halfDayCutoffTime) {
       status = "HALF_DAY";
+    } else if (clockOutDate < officeEnd) {
+      status = "EARLY_LEAVE";
     }
+    // 19:00 or later keeps Present/Late from check-in
   }
 
   return {
@@ -606,12 +632,21 @@ const getDashboard =
         }
       );
 
+    const earlyLeave =
+      await Attendance.countDocuments(
+        {
+          date: today,
+          status: "EARLY_LEAVE",
+        }
+      );
+
     const absent =
       totalEmployees -
       (
         present +
         late +
-        halfDay
+        halfDay +
+        earlyLeave
       );
 
     return {
@@ -621,6 +656,7 @@ const getDashboard =
         present,
         late,
         halfDay,
+        earlyLeave,
         absent,
       },
     };
@@ -635,6 +671,36 @@ const formatEmployeeSummary = (employee) => ({
   department: employee.department || "",
   profilePhoto: employee.profilePhoto || "",
 });
+
+const formatEmployeeSummaryFromAttendance = (record, employeeById) => {
+  const employeeRef = record?.employee;
+  const employeeIdKey = employeeRef?._id
+    ? String(employeeRef._id)
+    : employeeRef
+      ? String(employeeRef)
+      : "";
+
+  const resolvedEmployee =
+    employeeRef?._id && employeeRef?.name
+      ? employeeRef
+      : employeeIdKey
+        ? employeeById.get(employeeIdKey)
+        : null;
+
+  if (resolvedEmployee?._id) {
+    return formatEmployeeSummary(resolvedEmployee);
+  }
+
+  return {
+    _id: employeeIdKey || record?._id,
+    employeeId: record?.employeeId || "",
+    biometricEmpCode: record?.biometricEmpCode || "",
+    name: record?.employeeName || "Unknown",
+    designation: "",
+    department: "",
+    profilePhoto: "",
+  };
+};
 
 const formatAttendanceSummary = (record) => {
   if (!record) {
@@ -1022,6 +1088,10 @@ const formatMonthlySheetCell = (record, isWeekend, isFutureDate) => {
     return "HALF DAY";
   }
 
+  if (record.status === "EARLY_LEAVE") {
+    return "EARLY LEAVE";
+  }
+
   const hasClockIn = Boolean(record.clockIn);
   const hasClockOut = Boolean(record.clockOut);
 
@@ -1032,6 +1102,53 @@ const formatMonthlySheetCell = (record, isWeekend, isFutureDate) => {
   }
 
   return "P";
+};
+
+const recalculateAttendanceRecordMetrics = async (attendanceDoc, employee, dateKey) => {
+  if (!attendanceDoc?.clockIn || !employee) {
+    return;
+  }
+
+  const clockInDate = new Date(attendanceDoc.clockIn);
+  if (Number.isNaN(clockInDate.getTime())) {
+    return;
+  }
+
+  const clockOutDate = attendanceDoc.clockOut
+    ? new Date(attendanceDoc.clockOut)
+    : null;
+
+  if (clockOutDate && Number.isNaN(clockOutDate.getTime())) {
+    return;
+  }
+
+  const metrics = calculateAttendanceMetrics(
+    clockInDate,
+    clockOutDate,
+    employee,
+    dateKey || attendanceDoc.date
+  );
+
+  const shouldUpdate =
+    attendanceDoc.status !== metrics.status ||
+    attendanceDoc.workingMinutes !== metrics.workingMinutes ||
+    attendanceDoc.lateMinutes !== metrics.lateMinutes ||
+    attendanceDoc.overtimeMinutes !== metrics.overtimeMinutes ||
+    attendanceDoc.shortfallMinutes !== metrics.shortfallMinutes ||
+    attendanceDoc.earlyOutMinutes !== metrics.earlyOutMinutes;
+
+  if (!shouldUpdate) {
+    return;
+  }
+
+  attendanceDoc.status = metrics.status;
+  attendanceDoc.workingMinutes = metrics.workingMinutes;
+  attendanceDoc.lateMinutes = metrics.lateMinutes;
+  attendanceDoc.overtimeMinutes = metrics.overtimeMinutes;
+  attendanceDoc.shortfallMinutes = metrics.shortfallMinutes;
+  attendanceDoc.earlyOutMinutes = metrics.earlyOutMinutes;
+
+  await attendanceDoc.save();
 };
 
 const getAttendanceDashboardDetails = async (dateKey) => {
@@ -1072,21 +1189,22 @@ const getAttendanceDashboardDetails = async (dateKey) => {
 
   const todayRecords = await Attendance.find({
     date: today,
-  })
-    .populate(
-      "employee",
-      "employeeId biometricEmpCode name designation department profilePhoto"
-    )
-    .lean();
+  });
+
+  for (const record of todayRecords) {
+    if (!record?.employee) {
+      continue;
+    }
+
+    const employee = employeeById.get(String(record.employee));
+    await recalculateAttendanceRecordMetrics(record, employee, today);
+  }
 
   const attendanceByEmployeeId = new Map();
 
   todayRecords.forEach((record) => {
-    if (record.employee?._id) {
-      attendanceByEmployeeId.set(
-        String(record.employee._id),
-        record
-      );
+    if (record.employee) {
+      attendanceByEmployeeId.set(String(record.employee), record);
     }
   });
 
@@ -1100,6 +1218,10 @@ const getAttendanceDashboardDetails = async (dateKey) => {
 
   const halfDay = todayRecords.filter(
     (record) => record.status === "HALF_DAY"
+  ).length;
+
+  const earlyLeave = todayRecords.filter(
+    (record) => record.status === "EARLY_LEAVE"
   ).length;
 
   const checkInCount = todayRecords.filter(
@@ -1184,7 +1306,10 @@ const getAttendanceDashboardDetails = async (dateKey) => {
       (a, b) => b.lateMinutes - a.lateMinutes
     )
     .map((record) => ({
-      employee: formatEmployeeSummary(record.employee),
+      employee: formatEmployeeSummaryFromAttendance(
+        record,
+        employeeById
+      ),
       attendance: formatAttendanceSummary(record),
     }));
 
@@ -1265,6 +1390,7 @@ const getAttendanceDashboardDetails = async (dateKey) => {
         presentToday: present,
         lateToday: late,
         halfDayToday: halfDay,
+        earlyLeaveToday: earlyLeave,
         absentToday: absent,
         attendanceRate,
         checkInCount,
@@ -1281,6 +1407,7 @@ const getAttendanceDashboardDetails = async (dateKey) => {
         present,
         late,
         halfDay,
+        earlyLeave,
         absent,
         onLeave: 0,
       },
@@ -1289,8 +1416,9 @@ const getAttendanceDashboardDetails = async (dateKey) => {
       lateArrivals,
       missingPunchEmployees: missingPunchRecords.map(
         (record) => ({
-          employee: formatEmployeeSummary(
-            record.employee
+          employee: formatEmployeeSummaryFromAttendance(
+            record,
+            employeeById
           ),
           attendance: formatAttendanceSummary(record),
         })
@@ -1354,7 +1482,7 @@ const getMyAttendanceDashboard = async (
   const hasClockOut = Boolean(todayAttendance?.clockOut);
   const isPresent = Boolean(
     todayAttendance &&
-      ["PRESENT", "LATE", "HALF_DAY"].includes(
+      ["PRESENT", "LATE", "HALF_DAY", "EARLY_LEAVE"].includes(
         todayAttendance.status
       )
   );
@@ -1543,13 +1671,7 @@ const manualUpdateAttendance = async (
   body,
   updatedBy
 ) => {
-  const attendance = await Attendance.findById(attendanceId);
-
-  if (!attendance) {
-    throw new Error("Attendance not found");
-  }
-
-  const { clockIn, clockOut, reason } = body;
+  const { clockIn, clockOut, reason, date, employeeId } = body;
 
   if (!clockIn && !clockOut) {
     throw new Error("Clock In or Clock Out is required");
@@ -1559,43 +1681,88 @@ const manualUpdateAttendance = async (
     throw new Error("Reason is required");
   }
 
-  const attendanceDate = attendance.date;
-  const user = await User.findById(attendance.employee);
+  let targetEmployeeId = null;
+  let fallbackDate = date || null;
+
+  const attendanceById = await Attendance.findById(attendanceId);
+
+  if (attendanceById) {
+    targetEmployeeId = attendanceById.employee;
+    fallbackDate = fallbackDate || attendanceById.date;
+  } else if (employeeId) {
+    targetEmployeeId = employeeId;
+  } else if (attendanceId) {
+    const userById = await User.findById(attendanceId);
+
+    if (userById) {
+      targetEmployeeId = userById._id;
+    }
+  }
+
+  if (!targetEmployeeId) {
+    throw new Error("Attendance not found");
+  }
+
+  const targetDate = fallbackDate;
+
+  if (!targetDate) {
+    throw new Error("Date is required");
+  }
+
+  let attendance = await Attendance.findOne({
+    employee: targetEmployeeId,
+    date: targetDate,
+  });
+
+  const user = await User.findById(targetEmployeeId);
+
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  if (!attendance) {
+    attendance = await Attendance.create({
+      employee: targetEmployeeId,
+      date: targetDate,
+      ...getAttendanceEmployeeSnapshot(user),
+      status: "ABSENT",
+      punchEvents: [],
+    });
+  }
 
   const existingClockIn = attendance.clockIn || null;
   const existingClockOut = attendance.clockOut || null;
 
   const nextClockIn = clockIn
-    ? new Date(`${attendanceDate}T${clockIn}:00`)
+    ? new Date(`${targetDate}T${clockIn}:00`)
     : existingClockIn;
   const nextClockOut = clockOut
-    ? new Date(`${attendanceDate}T${clockOut}:00`)
+    ? new Date(`${targetDate}T${clockOut}:00`)
     : existingClockOut;
 
-  if (!nextClockIn) {
+  if (clockOut && !nextClockIn) {
     throw new Error("Clock In is required before setting Clock Out");
   }
 
-  if (nextClockOut && nextClockOut <= nextClockIn) {
+  if (nextClockIn && nextClockOut && nextClockOut <= nextClockIn) {
     throw new Error("Clock Out must be greater than Clock In");
   }
 
-  attendance.clockIn = nextClockIn;
-  attendance.clockOut = nextClockOut;
-
   if (clockIn) {
+    attendance.clockIn = nextClockIn;
     attendance.clockInSource = "MANUAL";
   }
 
   if (clockOut) {
+    attendance.clockOut = nextClockOut;
     attendance.clockOutSource = "MANUAL";
   }
 
   const metrics = calculateAttendanceMetrics(
-    nextClockIn,
-    nextClockOut,
+    attendance.clockIn,
+    attendance.clockOut,
     user,
-    attendanceDate
+    targetDate
   );
 
   attendance.workingMinutes = metrics.workingMinutes;

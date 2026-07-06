@@ -116,6 +116,7 @@ const attendanceSchema = new mongoose.Schema(
         "PRESENT",
         "LATE",
         "HALF_DAY",
+        "EARLY_LEAVE",
         "ABSENT",
         "WEEK_OFF",
         "LEAVE",
