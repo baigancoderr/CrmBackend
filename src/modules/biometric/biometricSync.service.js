@@ -11,7 +11,7 @@ const {
 } = require("../../utils/biometricEmpCode");
 
 const isBiometricSyncEnabled = () =>
-  process.env.ETIME_SYNC_ENABLED === "true";
+  process.env.ETIME_SYNC_ENABLED !== "false";
 
 const getAttendanceHelpers = () => {
   return require("../attendance/attendance.service");

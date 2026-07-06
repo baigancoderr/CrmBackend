@@ -231,6 +231,23 @@ const manualUpdateAttendance = async (req, res) => {
   }
 };
 
+const revokeClockOut = async (req, res) => {
+  try {
+    const result = await attendanceService.revokeClockOut(
+      req.params.id,
+      req.body.reason,
+      req.user.id
+    );
+
+    return res.status(200).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 const getAttendanceDashboardDetails = async (req, res) => {
   try {
     const result =
@@ -276,4 +293,5 @@ module.exports = {
   getEmployeeAttendance,
   getMonthlyTeamSheet,
   manualUpdateAttendance,
+  revokeClockOut,
 };

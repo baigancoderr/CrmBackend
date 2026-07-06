@@ -1,4 +1,5 @@
 const ExtraWork = require("./extraWork.model");
+const User = require("../user/user.model");
 
 /*
 |--------------------------------------------------------------------------
@@ -6,6 +7,28 @@ const ExtraWork = require("./extraWork.model");
 |--------------------------------------------------------------------------
 */
 
+
+const BUSINESS_TIMEZONE = "Asia/Kolkata";
+const EXTRA_WORK_STATUSES = [
+  "PENDING",
+  "APPROVED",
+  "REJECTED",
+  "EXPIRED",
+];
+
+const createAppError = (message, statusCode = 400) => {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+};
+
+const toBusinessDate = (dateValue) => {
+  return new Date(
+    new Date(dateValue).toLocaleString("en-US", {
+      timeZone: BUSINESS_TIMEZONE,
+    })
+  );
+};
 
 const isWeekend = (date) => {
   const day = date.getDay();
@@ -50,7 +73,7 @@ const updateExpiredRequests = async (userId = null) => {
 };
 
 const calculatePermissionWindow = (requestDate) => {
-  const date = new Date(requestDate);
+  const date = toBusinessDate(requestDate);
   const day = date.getDay();
 
   let validFrom;
@@ -101,6 +124,11 @@ const calculatePermissionWindow = (requestDate) => {
   return { validFrom, validTill };
 };
 
+const calculateRequestExpiry = (requestDate) => {
+  const { validTill } = calculatePermissionWindow(requestDate);
+  return validTill;
+};
+
 /*
 |--------------------------------------------------------------------------
 | Request Extra Work
@@ -109,22 +137,23 @@ const calculatePermissionWindow = (requestDate) => {
 
 const requestExtraWork = async (userId, reason) => {
   if (!reason || !reason.trim()) {
-    throw new Error("Reason is required.");
+    throw createAppError("Reason is required.", 422);
   }
 
   await updateExpiredRequests(userId);
 
   const now = new Date();
-  const day = now.getDay();
+  const nowInBusinessTimezone = toBusinessDate(now);
 
   // Monday-Friday request only after 7 PM
-  if (!isWeekend(now)) {
-    const requestStart = new Date(now);
+  if (!isWeekend(nowInBusinessTimezone)) {
+    const requestStart = new Date(nowInBusinessTimezone);
     requestStart.setHours(19, 0, 0, 0);
 
-    if (now < requestStart) {
-      throw new Error(
-        "Extra work request can only be submitted after 7:00 PM on working days."
+    if (nowInBusinessTimezone < requestStart) {
+      throw createAppError(
+        "Extra work request can only be submitted after 7:00 PM on working days.",
+        422
       );
     }
   }
@@ -135,7 +164,7 @@ const requestExtraWork = async (userId, reason) => {
   });
 
   if (pendingRequest) {
-    throw new Error("Your previous request is still pending.");
+    throw createAppError("Your previous request is still pending.", 409);
   }
 
   const approvedRequest = await ExtraWork.findOne({
@@ -145,18 +174,13 @@ const requestExtraWork = async (userId, reason) => {
   });
 
   if (approvedRequest) {
-    throw new Error("You already have an active approved permission.");
+    throw createAppError(
+      "You already have an active approved permission.",
+      409
+    );
   }
 
-  let requestExpireAt;
-
-  if (isWeekend(now)) {
-    requestExpireAt = new Date(now);
-    requestExpireAt.setHours(23, 59, 59, 999);
-  } else {
-    requestExpireAt = new Date(now);
-    requestExpireAt.setHours(20, 0, 0, 0);
-  }
+  const requestExpireAt = calculateRequestExpiry(now);
 
   const request = await ExtraWork.create({
     employee: userId,
@@ -166,9 +190,24 @@ const requestExtraWork = async (userId, reason) => {
     status: "PENDING",
   });
 
+  const hrRecipients = await User.find({
+    role: {
+      $in: ["HR", "SUPER_ADMIN"],
+    },
+    isActive: true,
+  })
+    .select("_id role name email employeeId")
+    .lean();
+
   return {
     success: true,
-    message: "Extra work request submitted successfully.",
+    message: "Extra work request submitted successfully. HR has been notified.",
+    notification: {
+      targetRoles: ["HR", "SUPER_ADMIN"],
+      recipientCount: hrRecipients.length,
+      recipients: hrRecipients,
+      sentAt: new Date(),
+    },
     data: request,
   };
 };
@@ -180,8 +219,12 @@ const requestExtraWork = async (userId, reason) => {
 */
 
 const approveExtraWork = async (requestId, adminId, action) => {
-  if (!["APPROVED", "REJECTED"].includes(action)) {
-    throw new Error("Invalid action.");
+  const normalizedAction = String(action || "")
+    .trim()
+    .toUpperCase();
+
+  if (!["APPROVED", "REJECTED"].includes(normalizedAction)) {
+    throw createAppError("Invalid action.", 422);
   }
 
   await updateExpiredRequests();
@@ -189,19 +232,19 @@ const approveExtraWork = async (requestId, adminId, action) => {
   const request = await ExtraWork.findById(requestId);
 
   if (!request) {
-    throw new Error("Request not found.");
+    throw createAppError("Request not found.", 404);
   }
 
   if (request.status === "APPROVED") {
-    throw new Error("Request already approved.");
+    throw createAppError("Request already approved.", 409);
   }
 
   if (request.status === "REJECTED") {
-    throw new Error("Request already rejected.");
+    throw createAppError("Request already rejected.", 409);
   }
 
   if (request.status === "EXPIRED") {
-    throw new Error("Request already expired.");
+    throw createAppError("Request already expired.", 410);
   }
 
   const now = new Date();
@@ -210,11 +253,11 @@ const approveExtraWork = async (requestId, adminId, action) => {
   if (request.requestExpireAt && request.requestExpireAt < now) {
     request.status = "EXPIRED";
     await request.save();
-    throw new Error("Request has expired.");
+    throw createAppError("Request has expired.", 410);
   }
 
   // Reject
-  if (action === "REJECTED") {
+  if (normalizedAction === "REJECTED") {
     request.status = "REJECTED";
     request.rejectedAt = now;
     request.approvedBy = adminId;
@@ -236,7 +279,10 @@ const approveExtraWork = async (requestId, adminId, action) => {
   });
 
   if (existingPermission) {
-    throw new Error("Employee already has an active approved permission.");
+    throw createAppError(
+      "Employee already has an active approved permission.",
+      409
+    );
   }
 
   const { validFrom, validTill } = calculatePermissionWindow(
@@ -279,8 +325,9 @@ const extraClockIn = async (userId) => {
   });
 
   if (!permission) {
-    throw new Error(
-      "You don't have an active extra work permission."
+    throw createAppError(
+      "You don't have an active extra work permission.",
+      422
     );
   }
 
@@ -289,8 +336,9 @@ const extraClockIn = async (userId) => {
   );
 
   if (activeSession) {
-    throw new Error(
-      "You have already clocked in. Please clock out first."
+    throw createAppError(
+      "You have already clocked in. Please clock out first.",
+      409
     );
   }
 
@@ -328,8 +376,9 @@ const extraClockOut = async (userId) => {
   });
 
   if (!permission) {
-    throw new Error(
-      "You don't have an active extra work permission."
+    throw createAppError(
+      "You don't have an active extra work permission.",
+      422
     );
   }
 
@@ -338,8 +387,9 @@ const extraClockOut = async (userId) => {
   );
 
   if (!activeSession) {
-    throw new Error(
-      "Please clock in before clocking out."
+    throw createAppError(
+      "Please clock in before clocking out.",
+      409
     );
   }
 
@@ -392,12 +442,11 @@ const getMyRequestStatus = async (userId) => {
       createdAt: -1,
     });
 
-  if (!request) {
-    throw new Error("No extra work request found.");
-  }
-
   return {
     success: true,
+    message: request
+      ? "Latest extra work request fetched."
+      : "No extra work request found.",
     data: request,
   };
 };
@@ -480,7 +529,15 @@ const getAllRequests = async (
   const filter = {};
 
   if (status) {
-    filter.status = status;
+    const normalizedStatus = String(status)
+      .trim()
+      .toUpperCase();
+
+    if (!EXTRA_WORK_STATUSES.includes(normalizedStatus)) {
+      throw createAppError("Invalid status filter.", 422);
+    }
+
+    filter.status = normalizedStatus;
   }
 
   const totalRecords = await ExtraWork.countDocuments(filter);

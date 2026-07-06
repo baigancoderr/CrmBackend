@@ -7,7 +7,7 @@ const {
 } = require("../../utils/biometricEmpCode");
 
 const isBiometricFetchEnabled = () =>
-  process.env.ETIME_FETCH_ENABLED === "true";
+  process.env.ETIME_FETCH_ENABLED !== "false";
 
 const getLocalDateKey = () => {
   return new Intl.DateTimeFormat("en-CA", {

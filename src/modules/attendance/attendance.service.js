@@ -665,6 +665,312 @@ const formatAttendanceSummary = (record) => {
   };
 };
 
+const normalizeBiometricCode = (value) => {
+  if (!value) {
+    return "";
+  }
+
+  const digits = String(value).replace(/\D/g, "");
+
+  if (!digits) {
+    return String(value).trim();
+  }
+
+  const numericValue = Number.parseInt(digits, 10);
+  if (Number.isNaN(numericValue)) {
+    return String(value).trim();
+  }
+
+  return String(numericValue).padStart(4, "0");
+};
+
+const parseBiometricTimeToIso = (dateKey, value) => {
+  if (!value || value === "--" || value === "-" || value === "00:00") {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  const hasSeconds = /^\d{2}:\d{2}:\d{2}$/.test(normalized);
+  const hasMinutes = /^\d{2}:\d{2}$/.test(normalized);
+
+  if (!hasSeconds && !hasMinutes) {
+    return null;
+  }
+
+  const timeValue = hasSeconds ? normalized : `${normalized}:00`;
+  const parsed = new Date(`${dateKey}T${timeValue}`);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString();
+};
+
+const getAttendanceFromBiometric = (existingAttendance, biometricRecord, dateKey) => {
+  if (!biometricRecord) {
+    return existingAttendance;
+  }
+
+  const biometricClockIn = parseBiometricTimeToIso(dateKey, biometricRecord.inTime);
+  const biometricClockOut = parseBiometricTimeToIso(dateKey, biometricRecord.outTime);
+
+  if (!existingAttendance) {
+    if (!biometricClockIn && !biometricClockOut) {
+      return null;
+    }
+
+    return {
+      _id: null,
+      employeeId: biometricRecord.crmEmployee?.employeeId || "",
+      employeeName: biometricRecord.crmEmployee?.name || biometricRecord.name || "",
+      biometricEmpCode:
+        biometricRecord.crmEmployee?.biometricEmpCode || biometricRecord.empcode || "",
+      date: dateKey,
+      clockIn: biometricClockIn,
+      clockOut: biometricClockOut,
+      status: biometricRecord.status || (biometricClockIn ? "PRESENT" : "ABSENT"),
+      clockInSource: biometricClockIn ? "BIOMETRIC" : null,
+      clockOutSource: biometricClockOut ? "BIOMETRIC" : null,
+      lateMinutes: 0,
+      earlyOutMinutes: 0,
+      workingMinutes: 0,
+      overtimeMinutes: 0,
+      punchEvents: [],
+    };
+  }
+
+  return {
+    ...existingAttendance,
+    clockIn: existingAttendance.clockIn || biometricClockIn,
+    clockOut: existingAttendance.clockOut || biometricClockOut,
+    clockInSource:
+      existingAttendance.clockInSource ||
+      (biometricClockIn ? "BIOMETRIC" : existingAttendance.clockInSource),
+    clockOutSource:
+      existingAttendance.clockOutSource ||
+      (biometricClockOut ? "BIOMETRIC" : existingAttendance.clockOutSource),
+  };
+};
+
+const resolveEmployeeForBiometricRecord = (
+  record,
+  employeeById,
+  employeeByCode
+) => {
+  const employeeId = record?.crmEmployee?._id
+    ? String(record.crmEmployee._id)
+    : "";
+
+  if (employeeId && employeeById.has(employeeId)) {
+    return employeeById.get(employeeId);
+  }
+
+  const normalizedCode = normalizeBiometricCode(
+    record?.crmEmployee?.biometricEmpCode || record?.empcode
+  );
+
+  if (normalizedCode && employeeByCode.has(normalizedCode)) {
+    return employeeByCode.get(normalizedCode);
+  }
+
+  return null;
+};
+
+const syncAttendanceFromBiometricInOut = async (
+  dateKey,
+  biometricRecords,
+  employeeById,
+  employeeByCode
+) => {
+  if (!Array.isArray(biometricRecords) || biometricRecords.length === 0) {
+    return;
+  }
+
+  const employeeIds = Array.from(employeeById.keys());
+  if (employeeIds.length === 0) {
+    return;
+  }
+
+  const attendanceDocs = await Attendance.find({
+    date: dateKey,
+    employee: { $in: employeeIds },
+  });
+
+  const attendanceByEmployeeId = new Map();
+  attendanceDocs.forEach((doc) => {
+    attendanceByEmployeeId.set(String(doc.employee), doc);
+  });
+
+  for (const record of biometricRecords) {
+    const employee = resolveEmployeeForBiometricRecord(
+      record,
+      employeeById,
+      employeeByCode
+    );
+
+    if (!employee?._id) {
+      continue;
+    }
+
+    const biometricClockInIso = parseBiometricTimeToIso(dateKey, record.inTime);
+    const biometricClockOutIso = parseBiometricTimeToIso(dateKey, record.outTime);
+
+    const biometricClockIn = biometricClockInIso
+      ? new Date(biometricClockInIso)
+      : null;
+    const biometricClockOut = biometricClockOutIso
+      ? new Date(biometricClockOutIso)
+      : null;
+
+    if (!biometricClockIn && !biometricClockOut) {
+      continue;
+    }
+
+    const employeeIdKey = String(employee._id);
+    let attendance = attendanceByEmployeeId.get(employeeIdKey);
+
+    if (!attendance) {
+      if (!biometricClockIn) {
+        continue;
+      }
+
+      const validClockOut =
+        biometricClockOut && biometricClockOut > biometricClockIn
+          ? biometricClockOut
+          : null;
+      const metrics = calculateAttendanceMetrics(
+        biometricClockIn,
+        validClockOut,
+        employee,
+        dateKey
+      );
+
+      attendance = await Attendance.create({
+        employee: employee._id,
+        date: dateKey,
+        ...getAttendanceEmployeeSnapshot(employee),
+        clockIn: biometricClockIn,
+        clockOut: validClockOut,
+        clockInSource: "BIOMETRIC",
+        clockOutSource: validClockOut ? "BIOMETRIC" : "MANUAL",
+        lateMinutes: metrics.lateMinutes,
+        overtimeMinutes: metrics.overtimeMinutes,
+        shortfallMinutes: metrics.shortfallMinutes,
+        earlyOutMinutes: metrics.earlyOutMinutes,
+        workingMinutes: metrics.workingMinutes,
+        status: metrics.status,
+        punchEvents: [
+          {
+            action: "CLOCK_IN",
+            source: "BIOMETRIC",
+            time: biometricClockIn,
+            by: null,
+            note: "Biometric clock in hydrated from in/out API",
+          },
+          ...(validClockOut
+            ? [
+                {
+                  action: "CLOCK_OUT",
+                  source: "BIOMETRIC",
+                  time: validClockOut,
+                  by: null,
+                  note: "Biometric clock out hydrated from in/out API",
+                },
+              ]
+            : []),
+        ],
+      });
+
+      attendanceByEmployeeId.set(employeeIdKey, attendance);
+      continue;
+    }
+
+    let changed = false;
+    let effectiveClockIn = attendance.clockIn ? new Date(attendance.clockIn) : null;
+    let effectiveClockOut = attendance.clockOut ? new Date(attendance.clockOut) : null;
+
+    if (biometricClockIn && (!effectiveClockIn || biometricClockIn < effectiveClockIn)) {
+      attendance.clockIn = biometricClockIn;
+      attendance.clockInSource = "BIOMETRIC";
+      effectiveClockIn = biometricClockIn;
+      changed = true;
+
+      addPunchEvent(attendance, {
+        action: "CLOCK_IN",
+        source: "BIOMETRIC",
+        time: biometricClockIn,
+        by: null,
+        note: "Biometric clock in hydrated from in/out API",
+      });
+    }
+
+    if (
+      biometricClockOut &&
+      effectiveClockIn &&
+      biometricClockOut > effectiveClockIn &&
+      (!effectiveClockOut || biometricClockOut > effectiveClockOut)
+    ) {
+      attendance.clockOut = biometricClockOut;
+      attendance.clockOutSource = "BIOMETRIC";
+      effectiveClockOut = biometricClockOut;
+      changed = true;
+
+      addPunchEvent(attendance, {
+        action: "CLOCK_OUT",
+        source: "BIOMETRIC",
+        time: biometricClockOut,
+        by: null,
+        note: "Biometric clock out hydrated from in/out API",
+      });
+    }
+
+    // Even if punch timestamps were already present, recalc to avoid stale ABSENT status.
+    if (effectiveClockIn) {
+      const metrics = calculateAttendanceMetrics(
+        effectiveClockIn,
+        effectiveClockOut,
+        employee,
+        dateKey
+      );
+
+      if (
+        attendance.status !== metrics.status ||
+        attendance.workingMinutes !== metrics.workingMinutes ||
+        attendance.lateMinutes !== metrics.lateMinutes ||
+        attendance.overtimeMinutes !== metrics.overtimeMinutes ||
+        attendance.shortfallMinutes !== metrics.shortfallMinutes ||
+        attendance.earlyOutMinutes !== metrics.earlyOutMinutes
+      ) {
+        changed = true;
+      }
+
+      attendance.workingMinutes = metrics.workingMinutes;
+      attendance.lateMinutes = metrics.lateMinutes;
+      attendance.overtimeMinutes = metrics.overtimeMinutes;
+      attendance.shortfallMinutes = metrics.shortfallMinutes;
+      attendance.earlyOutMinutes = metrics.earlyOutMinutes;
+      attendance.status = metrics.status;
+    }
+
+    const snapshot = getAttendanceEmployeeSnapshot(employee);
+    if (
+      attendance.employeeId !== snapshot.employeeId ||
+      attendance.employeeName !== snapshot.employeeName ||
+      attendance.biometricEmpCode !== snapshot.biometricEmpCode
+    ) {
+      changed = true;
+      attendance.employeeId = snapshot.employeeId;
+      attendance.employeeName = snapshot.employeeName;
+      attendance.biometricEmpCode = snapshot.biometricEmpCode;
+    }
+
+    if (changed) {
+      await attendance.save();
+    }
+  }
+};
+
 const MONTH_LABELS = [
   "JANUARY",
   "FEBRUARY",
@@ -691,7 +997,11 @@ const formatTimePart = (dateValue) => {
   return `${hours}:${minutes}`;
 };
 
-const formatMonthlySheetCell = (record, isWeekend) => {
+const formatMonthlySheetCell = (record, isWeekend, isFutureDate) => {
+  if (isFutureDate) {
+    return "";
+  }
+
   if (!record) {
     return isWeekend ? "" : "A";
   }
@@ -731,10 +1041,34 @@ const getAttendanceDashboardDetails = async (dateKey) => {
     isActive: true,
   })
     .select(
-      "employeeId biometricEmpCode name designation department profilePhoto role"
+      "employeeId biometricEmpCode name designation department profilePhoto role officeTiming"
     )
     .sort({ name: 1 })
     .lean();
+
+  const employeeById = new Map();
+  const employeeByCode = new Map();
+  activeEmployees.forEach((employee) => {
+    const employeeId = String(employee._id);
+    employeeById.set(employeeId, employee);
+
+    const normalizedCode = normalizeBiometricCode(
+      employee.biometricEmpCode || employee.employeeId?.replace(/^DOB/i, "")
+    );
+    if (normalizedCode) {
+      employeeByCode.set(normalizedCode, employee);
+    }
+  });
+
+  const biometricInOutResponse =
+    await fetchBiometricInOutRecords(today);
+
+  await syncAttendanceFromBiometricInOut(
+    today,
+    biometricInOutResponse.records,
+    employeeById,
+    employeeByCode
+  );
 
   const todayRecords = await Attendance.find({
     date: today,
@@ -875,18 +1209,45 @@ const getAttendanceDashboardDetails = async (dateKey) => {
   const biometricSyncResponse =
     await getBiometricSyncStatus();
 
-  const biometricInOutResponse =
-    await fetchBiometricInOutRecords(today);
+  const biometricByEmployeeId = new Map();
+  const biometricByEmpCode = new Map();
+  biometricInOutResponse.records.forEach((record) => {
+    const employeeId = record.crmEmployee?._id
+      ? String(record.crmEmployee._id)
+      : "";
+    const normalizedCode = normalizeBiometricCode(
+      record.crmEmployee?.biometricEmpCode || record.empcode
+    );
+
+    if (employeeId && !biometricByEmployeeId.has(employeeId)) {
+      biometricByEmployeeId.set(employeeId, record);
+    }
+
+    if (normalizedCode && !biometricByEmpCode.has(normalizedCode)) {
+      biometricByEmpCode.set(normalizedCode, record);
+    }
+  });
 
   const employeeAttendanceList = activeEmployees.map(
     (employee) => {
       const record = attendanceByEmployeeId.get(
         String(employee._id)
       );
+      const normalizedCode = normalizeBiometricCode(
+        employee.biometricEmpCode || employee.employeeId?.replace(/^DOB/i, "")
+      );
+      const biometricRecord =
+        biometricByEmployeeId.get(String(employee._id)) ||
+        biometricByEmpCode.get(normalizedCode);
+      const attendanceSummary = getAttendanceFromBiometric(
+        formatAttendanceSummary(record),
+        biometricRecord,
+        today
+      );
 
       return {
         employee: formatEmployeeSummary(employee),
-        attendance: formatAttendanceSummary(record),
+        attendance: attendanceSummary,
       };
     }
   );
@@ -1124,6 +1485,7 @@ const getMonthlyTeamSheet = async (month, year) => {
     .lean();
 
   const attendanceMap = new Map();
+  const todayDateKey = getTodayDate();
 
   monthlyRecords.forEach((record) => {
     const key = `${String(record.employee)}-${record.date}`;
@@ -1142,11 +1504,12 @@ const getMonthlyTeamSheet = async (month, year) => {
 
     const weekday = dateValue.getDay();
     const isWeekend = weekday === 0 || weekday === 6;
+    const isFutureDate = date > todayDateKey;
 
     const cells = activeEmployees.map((employee) => {
       const key = `${String(employee._id)}-${date}`;
       const record = attendanceMap.get(key);
-      return formatMonthlySheetCell(record, isWeekend);
+      return formatMonthlySheetCell(record, isWeekend, isFutureDate);
     });
 
     return {
@@ -1279,6 +1642,71 @@ const manualUpdateAttendance = async (
   };
 };
 
+const revokeClockOut = async (attendanceId, reason, updatedBy) => {
+  const attendance = await Attendance.findById(attendanceId);
+
+  if (!attendance) {
+    throw new Error("Attendance not found");
+  }
+
+  if (!reason || !reason.trim()) {
+    throw new Error("Reason is required");
+  }
+
+  if (!attendance.clockIn) {
+    throw new Error("Clock In is missing. Cannot revoke Clock Out.");
+  }
+
+  if (!attendance.clockOut) {
+    throw new Error("Clock Out is already empty");
+  }
+
+  const user = await User.findById(attendance.employee);
+  const attendanceDate = attendance.date;
+  const previousClockOut = attendance.clockOut;
+
+  attendance.clockOut = null;
+  attendance.clockOutSource = "MANUAL";
+
+  const metrics = calculateAttendanceMetrics(
+    attendance.clockIn,
+    null,
+    user,
+    attendanceDate
+  );
+
+  attendance.workingMinutes = metrics.workingMinutes;
+  attendance.lateMinutes = metrics.lateMinutes;
+  attendance.overtimeMinutes = metrics.overtimeMinutes;
+  attendance.shortfallMinutes = metrics.shortfallMinutes;
+  attendance.earlyOutMinutes = metrics.earlyOutMinutes;
+  attendance.status = metrics.status;
+  attendance.employeeId = user?.employeeId || attendance.employeeId;
+  attendance.employeeName = user?.name || attendance.employeeName;
+  attendance.biometricEmpCode =
+    user?.biometricEmpCode || attendance.biometricEmpCode;
+
+  attendance.updatedBy = updatedBy;
+  attendance.updateReason = reason.trim();
+  attendance.isManuallyUpdated = true;
+
+  addPunchEvent(attendance, {
+    action: "CLOCK_OUT",
+    source: "MANUAL",
+    time: previousClockOut,
+    by: updatedBy,
+    note: `Clock Out revoked: ${reason.trim()}`,
+  });
+
+  await attendance.save();
+
+  return {
+    success: true,
+    message: "Clock Out revoked successfully",
+    data: attendance,
+  };
+};
+
 module.exports = {
   ensureDailyAttendanceRecords,
   clockIn,
@@ -1292,6 +1720,7 @@ module.exports = {
   getEmployeeAttendance,
   getMonthlyTeamSheet,
   manualUpdateAttendance,
+  revokeClockOut,
   applyBiometricPunch,
   parseBiometricPunchDate,
 };
