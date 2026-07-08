@@ -16,7 +16,8 @@ const isBiometricSyncEnabled =
 
 // Middlewares
 app.use(cors());
-app.use(express.json());
+// Daily work report attachments are sent as base64 JSON (up to 5 MB file).
+app.use(express.json({ limit: "8mb" }));
 app.use(cookieParser());
 
 // Routes
@@ -25,6 +26,7 @@ app.use("/api", routes);
 const path = require("path");
 
 app.use("/uploads",express.static(path.join(__dirname, "uploads")));
+
 
 (async () => {
   try {
