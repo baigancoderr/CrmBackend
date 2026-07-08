@@ -64,7 +64,7 @@ const authMiddleware = async (req, res, next) => {
     }
 
     const currentUser = await User.findById(decoded.id)
-      .select("role isActive")
+      .select("role isActive name")
       .lean();
 
     if (!currentUser) {
@@ -83,6 +83,7 @@ const authMiddleware = async (req, res, next) => {
     req.user = {
       ...decoded,
       role: currentUser.role,
+      name: currentUser.name,
     };
 
     next();

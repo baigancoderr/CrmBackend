@@ -1,15 +1,28 @@
 require("dotenv").config();
 
+const http = require("http");
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
+const { Server } = require("socket.io");
 
 const connectDB = require("./src/config/db");
 const { connectRedis } = require("./src/config/redis");
 
 const routes = require("./src/routes");
+const {
+  initializeChatSocket,
+} = require("./src/modules/chat/chat.socket");
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST", "PATCH", "DELETE"],
+  },
+});
+
 const PORT = process.env.PORT || 5000;
 const isBiometricSyncEnabled =
   process.env.ETIME_SYNC_ENABLED !== "false";
@@ -104,8 +117,11 @@ app.use("/uploads",express.static(path.join(__dirname, "uploads")));
       );
     }
 
-    app.listen(PORT, () => {
+    initializeChatSocket(io);
+
+    server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
+      console.log("Chat socket initialized");
     });
   } catch (error) {
     console.error(error);

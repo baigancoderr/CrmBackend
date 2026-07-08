@@ -16,5 +16,7 @@ router.use("/leave", require("../modules/leave/leave.routes"));
 
 router.use("/daily-work-report", require("../modules/daily-work-report/dailyWorkReport.routes"));
 
+router.use("/chat", require("../modules/chat/chat.routes"));
+
 
 module.exports = router;

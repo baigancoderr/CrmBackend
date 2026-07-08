@@ -1,0 +1,373 @@
+const chatService = require("./chat.service");
+
+const getIo = () => chatService.getSocketIo();
+
+const createConversation = async (req, res) => {
+  try {
+    const conversation = await chatService.createConversation(
+      req.body,
+      req.user
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Conversation created successfully",
+      data: conversation,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const getMyConversations = async (req, res) => {
+  try {
+    const conversations = await chatService.getMyConversations(
+      req.user.id,
+      req.query
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: conversations,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const getConversationById = async (req, res) => {
+  try {
+    const conversation = await chatService.getConversationById(
+      req.params.id,
+      req.user.id
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: conversation,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const updateConversation = async (req, res) => {
+  try {
+    const conversation = await chatService.updateConversation(
+      req.params.id,
+      req.body,
+      req.user
+    );
+
+    const io = getIo();
+
+    if (io) {
+      io.to(`conversation:${req.params.id}`).emit(
+        "conversation:updated",
+        {
+          conversationId: req.params.id,
+          conversation,
+        }
+      );
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Conversation updated successfully",
+      data: conversation,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const deleteConversation = async (req, res) => {
+  try {
+    const result = await chatService.deleteConversation(
+      req.params.id,
+      req.user,
+      getIo()
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Group deleted successfully",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const leaveConversation = async (req, res) => {
+  try {
+    const result = await chatService.leaveConversation(
+      req.params.id,
+      req.user.id,
+      getIo()
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "You left the group",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const getConversationMembers = async (req, res) => {
+  try {
+    const members = await chatService.getConversationMembers(
+      req.params.id,
+      req.user.id
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: members,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const addMembers = async (req, res) => {
+  try {
+    const members = await chatService.addMembers(
+      req.params.id,
+      req.body.userIds || [],
+      req.user,
+      getIo()
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Members added successfully",
+      data: members,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const removeMember = async (req, res) => {
+  try {
+    const members = await chatService.removeMember(
+      req.params.id,
+      req.params.userId,
+      req.user,
+      getIo()
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Member removed successfully",
+      data: members,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const getMessages = async (req, res) => {
+  try {
+    const messages = await chatService.getMessages(
+      req.params.id,
+      req.user.id,
+      req.query
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: messages,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const sendMessage = async (req, res) => {
+  try {
+    const message = await chatService.sendMessage(
+      req.params.id,
+      req.body,
+      req.user,
+      getIo()
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Message sent successfully",
+      data: message,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const uploadMessageFile = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "File is required",
+      });
+    }
+
+    const message = await chatService.sendFileMessage(
+      req.params.id,
+      req.file,
+      req.user,
+      getIo()
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "File sent successfully",
+      data: message,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const editMessage = async (req, res) => {
+  try {
+    const message = await chatService.editMessage(
+      req.params.messageId,
+      req.body.content,
+      req.user.id,
+      getIo()
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Message updated successfully",
+      data: message,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const deleteMessage = async (req, res) => {
+  try {
+    const scope = req.query.scope === "all" ? "all" : "me";
+    const result = await chatService.deleteMessage(
+      req.params.messageId,
+      scope,
+      req.user.id,
+      getIo()
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Message deleted successfully",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const markConversationAsRead = async (req, res) => {
+  try {
+    const result = await chatService.markConversationAsRead(
+      req.params.id,
+      req.user.id,
+      getIo()
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Conversation marked as read",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const getUnreadCount = async (req, res) => {
+  try {
+    const result = await chatService.getUnreadCount(
+      req.user.id
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+module.exports = {
+  createConversation,
+  getMyConversations,
+  getConversationById,
+  updateConversation,
+  deleteConversation,
+  leaveConversation,
+  getConversationMembers,
+  addMembers,
+  removeMember,
+  getMessages,
+  sendMessage,
+  uploadMessageFile,
+  editMessage,
+  deleteMessage,
+  markConversationAsRead,
+  getUnreadCount,
+};
