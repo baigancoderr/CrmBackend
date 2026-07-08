@@ -2,9 +2,14 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 
+const isPrivateStorageEnabled =
+  process.env.CHAT_UPLOAD_PRIVATE_STORAGE === "true";
+
 const uploadDir = path.join(
   __dirname,
-  "../../uploads/chat"
+  isPrivateStorageEnabled
+    ? "../../uploads-private/chat"
+    : "../../uploads/chat"
 );
 
 if (!fs.existsSync(uploadDir)) {

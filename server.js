@@ -5,9 +5,13 @@ const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const { Server } = require("socket.io");
+const { createAdapter } = require("@socket.io/redis-adapter");
 
 const connectDB = require("./src/config/db");
-const { connectRedis } = require("./src/config/redis");
+const {
+  connectRedis,
+  redisClient,
+} = require("./src/config/redis");
 
 const routes = require("./src/routes");
 const {
@@ -43,6 +47,15 @@ app.use("/uploads",express.static(path.join(__dirname, "uploads")));
   try {
     await connectDB();
     await connectRedis();
+    const socketPubClient = redisClient.duplicate();
+    const socketSubClient = redisClient.duplicate();
+    await Promise.all([
+      socketPubClient.connect(),
+      socketSubClient.connect(),
+    ]);
+    io.adapter(
+      createAdapter(socketPubClient, socketSubClient)
+    );
 
     const {
       ensureDailyAttendanceRecords,

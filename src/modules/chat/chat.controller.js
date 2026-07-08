@@ -26,7 +26,8 @@ const getMyConversations = async (req, res) => {
   try {
     const conversations = await chatService.getMyConversations(
       req.user.id,
-      req.query
+      req.query,
+      req.user.role
     );
 
     return res.status(200).json({
@@ -45,7 +46,8 @@ const getConversationById = async (req, res) => {
   try {
     const conversation = await chatService.getConversationById(
       req.params.id,
-      req.user.id
+      req.user.id,
+      req.user.role
     );
 
     return res.status(200).json({
@@ -139,7 +141,8 @@ const getConversationMembers = async (req, res) => {
   try {
     const members = await chatService.getConversationMembers(
       req.params.id,
-      req.user.id
+      req.user.id,
+      req.user.role
     );
 
     return res.status(200).json({
@@ -203,7 +206,8 @@ const getMessages = async (req, res) => {
     const messages = await chatService.getMessages(
       req.params.id,
       req.user.id,
-      req.query
+      req.query,
+      req.user.role
     );
 
     return res.status(200).json({
@@ -319,7 +323,8 @@ const markConversationAsRead = async (req, res) => {
     const result = await chatService.markConversationAsRead(
       req.params.id,
       req.user.id,
-      getIo()
+      getIo(),
+      req.user.role
     );
 
     return res.status(200).json({
@@ -353,6 +358,23 @@ const getUnreadCount = async (req, res) => {
   }
 };
 
+const getChatFile = async (req, res) => {
+  try {
+    const filePath =
+      await chatService.getChatFilePathForUser(
+        req.params.fileName,
+        req.user.id
+      );
+
+    return res.sendFile(filePath);
+  } catch (error) {
+    return res.status(404).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 module.exports = {
   createConversation,
   getMyConversations,
@@ -370,4 +392,5 @@ module.exports = {
   deleteMessage,
   markConversationAsRead,
   getUnreadCount,
+  getChatFile,
 };

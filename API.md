@@ -487,6 +487,312 @@ No body required. Manual API (admin-triggered) that marks `APPROVED` leaves as `
 
 ---
 
+## Chat (`/chat`)
+
+### NEW CHANGES (Chat hardening + consistency)
+
+- Added socket room access validation: user can join/emit typing only for conversations where user is an active member.
+- Added socket event `conversation:join:error` when unauthorized room join is attempted.
+- Presence logic now supports multi-tab/device sessions correctly (offline is emitted only when last active socket disconnects).
+- `sendMessage` now safely handles non-text payloads without `content.trim()` runtime crash.
+- Added Redis-backed REST and socket event rate limiting for spam control.
+- Added Joi validation schemas for chat REST and socket payloads.
+- Added upload signature validation (magic bytes) and optional antivirus command scan.
+- Added optional private chat file storage mode with authenticated file access endpoint.
+- Added denormalized per-member `unreadCount` for high-volume unread scalability.
+- Enabled Socket.IO Redis adapter for multi-instance horizontal scaling.
+- Added structured audit logging + Redis metrics counters + abuse threshold alerts.
+- Conversation `lastMessage` now auto-refreshes after:
+  - text message edit
+  - delete-for-everyone
+  so chat list preview stays consistent.
+
+| Method | Endpoint | Description | Access |
+|--------|----------|-------------|--------|
+| `GET` | `/chat/unread-count` | Get total unread messages for logged-in user | Authenticated |
+| `POST` | `/chat/conversations` | Create DM or Group conversation | Authenticated (group creation role-based) |` DONE`
+| `GET` | `/chat/conversations` | Get my active conversations (HR/PM/SA also see all groups) | Authenticated |
+| `GET` | `/chat/conversations/:id` | Get one conversation details | Active member, or HR/PM/SA for groups |
+| `PATCH` | `/chat/conversations/:id` | Update group name/description/photo | HR / Project Manager / Super Admin |
+| `DELETE` | `/chat/conversations/:id` | Soft delete group | HR / Project Manager / Super Admin |
+| `POST` | `/chat/conversations/:id/leave` | Leave group conversation | Active member only |
+| `GET` | `/chat/conversations/:id/members` | Get active members of conversation | Active member, or HR/PM/SA for groups |
+| `POST` | `/chat/conversations/:id/members` | Add members to group | HR / Project Manager / Super Admin |
+| `DELETE` | `/chat/conversations/:id/members/:userId` | Remove member from group | HR / Project Manager / Super Admin |
+| `GET` | `/chat/conversations/:id/messages` | Get messages for a conversation | Active member only | DONE
+| `POST` | `/chat/conversations/:id/messages` | Send text/image/file/system-compatible message payload | Active member only |
+| `POST` | `/chat/conversations/:id/upload` | Upload file and send as message | Active member only |
+| `GET` | `/chat/files/:fileName` | Authenticated file fetch (used for private storage mode) | Active member only |
+| `POST` | `/chat/conversations/:id/read` | Mark conversation as read | Active member only | DONE
+| `PATCH` | `/chat/messages/:messageId` | Edit my text message | Sender only | DONE
+| `DELETE` | `/chat/messages/:messageId?scope=me\|all` | Delete message for me or everyone | Member (scope rules apply) | DONE
+
+### Create conversation — `POST /chat/conversations`
+
+```json
+{
+  "type": "DM",
+  "memberIds": ["<otherUserId>"]
+}
+```
+
+```json
+{
+  "type": "GROUP",
+  "name": "UI Team",
+  "description": "Frontend collaboration",
+  "memberIds": ["<userId1>", "<userId2>"]
+}
+```
+
+Rules:
+- `type` must be `DM` or `GROUP`.
+- Group can be created only by: `SUPER_ADMIN`, `HR`, `PROJECT_MANAGER`.
+- `GROUP` requires `name` and at least one `memberId`.
+- `DM` requires exactly one other member (cannot be self).
+- If DM between same two active users already exists, API returns existing DM instead of creating a new one.
+- All selected members must be active users.
+- Request body is Joi-validated and rejects invalid ObjectIds/unknown fields.
+
+### Get my conversations — `GET /chat/conversations`
+
+Query params:
+- `page` (default `1`)
+- `limit` (default `20`, max `50`)
+- Query schema is Joi-validated.
+
+Response data includes per conversation:
+- `displayName` and `displayPhoto` (for DM, this is the other active user)
+- `unreadCount`
+- `myRole`
+- `lastReadAt`
+
+### Get one conversation — `GET /chat/conversations/:id`
+
+Returns formatted conversation object with populated:
+- `createdBy`
+- `members.user`
+- `lastMessage.sender`
+- `deletedBy`
+
+### Update conversation — `PATCH /chat/conversations/:id`
+
+```json
+{
+  "name": "Updated Group Name",
+  "description": "Updated description",
+  "photo": "/uploads/chat/group-photo.png"
+}
+```
+
+Rules:
+- Only `GROUP` can be updated.
+- `name` cannot be empty when provided.
+- Permission: only `HR`, `PROJECT_MANAGER`, or `SUPER_ADMIN`.
+
+### Delete conversation — `DELETE /chat/conversations/:id`
+
+Rules:
+- Only `GROUP` can be deleted.
+- Soft delete (`isDeleted`, `deletedAt`, `deletedBy`) is used.
+- Permission: only `HR`, `PROJECT_MANAGER`, or `SUPER_ADMIN`.
+
+### Leave conversation — `POST /chat/conversations/:id/leave`
+
+Rules:
+- Only for `GROUP`.
+- Sets member `leftAt`.
+- If leaving user is last active admin, admin role is auto-transferred to another active member.
+
+### Add members — `POST /chat/conversations/:id/members`
+
+```json
+{
+  "userIds": ["<userId1>", "<userId2>"]
+}
+```
+
+Rules:
+- Only for `GROUP`.
+- Permission: only `HR`, `PROJECT_MANAGER`, or `SUPER_ADMIN`.
+- Inactive/invalid users rejected.
+- Existing left members are re-activated (`leftAt=null`, role reset to `MEMBER`).
+- Already active users are skipped.
+- If nothing new is added, returns error.
+
+### Remove member — `DELETE /chat/conversations/:id/members/:userId`
+
+Rules:
+- Only for `GROUP`.
+- Permission: only `HR`, `PROJECT_MANAGER`, or `SUPER_ADMIN`.
+- Cannot remove yourself with this endpoint (use `leave` endpoint).
+- Member is soft-removed by setting `leftAt`.
+
+### Get messages — `GET /chat/conversations/:id/messages`
+
+Query params:
+- `limit` (default `50`, max `100`)
+- `before` (`messageId`, for older-message pagination cursor)
+
+Rules:
+- Excludes globally deleted messages (`isDeletedForAll=true`).
+- Excludes messages deleted only for logged-in user (`deletedFor` contains user).
+- Returns results in chronological order (oldest to latest within requested batch).
+
+### Send message — `POST /chat/conversations/:id/messages`
+
+```json
+{
+  "type": "TEXT",
+  "content": "Hi team",
+  "replyTo": "<optionalMessageId>",
+  "mentions": ["<optionalUserId>"]
+}
+```
+
+Rules:
+- Default `type` is `TEXT`.
+- Supported types: `TEXT`, `IMAGE`, `FILE`, `SYSTEM`.
+- `TEXT` requires non-empty `content`.
+- For non-text types, empty content is handled safely (no trim crash).
+- `replyTo` must belong to same conversation.
+- `mentions` are filtered to only active conversation members.
+- Sender gets immediate read receipt entry in `readBy`.
+- Conversation `lastMessage` is updated automatically.
+- Rate limit: `40` sends per user per minute.
+
+### Upload file message — `POST /chat/conversations/:id/upload`
+
+Form-data:
+- `file` (required)
+
+Upload behavior:
+- Stored under `/uploads/chat` by default.
+- If `CHAT_UPLOAD_PRIVATE_STORAGE=true`, file is stored under `uploads-private/chat` and served via `GET /chat/files/:fileName`.
+- Allowed mime types: `jpg`, `jpeg`, `png`, `webp`, `pdf`, `docx`, `zip`.
+- Max file size: `10MB`.
+- Magic-byte signature is verified against mime type.
+- Optional malware scan command supported via `CHAT_VIRUS_SCAN_COMMAND` (replace `{file}` placeholder or append file path).
+- Server creates message with:
+  - `type = IMAGE` if file is image mime
+  - `type = FILE` otherwise
+  - `content = /uploads/chat/<generatedFilename>` (public mode) OR `/api/chat/files/<generatedFilename>` (private mode)
+  - `fileMeta = { name, size, mimeType }`
+- Rate limit: `12` uploads per user per minute.
+
+### Get chat file — `GET /chat/files/:fileName`
+
+Rules:
+- Requires auth token.
+- User can access file only if they are active member of the conversation where that file message exists.
+- Used primarily when private storage mode is enabled.
+
+### Edit message — `PATCH /chat/messages/:messageId`
+
+```json
+{
+  "content": "Updated text message"
+}
+```
+
+Rules:
+- Only sender can edit.
+- Only `TEXT` messages can be edited.
+- Message cannot be already deleted for all.
+- Sets `editedAt`.
+- Rebuilds conversation `lastMessage` preview after edit.
+
+### Delete message — `DELETE /chat/messages/:messageId?scope=me|all`
+
+Rules:
+- `scope=all`: only sender can delete for everyone. Marks `isDeletedForAll=true` and replaces content with `"This message was deleted"`.
+- `scope=me` (default): adds logged-in user to `deletedFor` list.
+- User must be active conversation member.
+- On `scope=all`, conversation `lastMessage` preview is recalculated from latest visible (not deleted-for-all) message.
+
+### Mark as read — `POST /chat/conversations/:id/read`
+
+Rules:
+- Sets current member `lastReadAt` for conversation.
+- Adds read receipt entry for all unread incoming messages (`readBy` push where user not already present).
+- Resets denormalized member `unreadCount` to `0`.
+
+### Unread count — `GET /chat/unread-count`
+
+Unread rules per conversation:
+- Uses denormalized `members.unreadCount` for fast aggregation (O(conversations), no per-conversation message count scans).
+- Counter is incremented on message send for active recipients and cleared on mark-as-read.
+- On delete-for-everyone, counters are recomputed for consistency.
+
+---
+
+## Chat Socket.IO Logic
+
+Socket setup:
+- Socket.IO is initialized in `server.js` and chat socket handlers are attached once server starts.
+- Client must send token in handshake:
+  - `socket.handshake.auth.token` or
+  - `socket.handshake.query.token`
+- On successful auth:
+  - socket joins room `user:<userId>`
+  - presence key `presence:<userId>` is stored in Redis with TTL `30s`
+  - `user:online` is broadcast
+
+Client-emitted events:
+- `conversation:join` with `{ conversationId }` -> joins room only if user has active membership
+- `conversation:leave` with `{ conversationId }` -> leave room
+- `typing:start` with `{ conversationId }` -> allowed only for active member, stores typing Redis key for 5s and emits `typing:start` to other room members
+- `typing:stop` with `{ conversationId }` -> allowed only for active member, removes typing key and emits `typing:stop`
+- `presence:heartbeat` -> refresh online TTL to keep user online
+- All above payloads are Joi-validated.
+- Socket rate limits:
+  - `conversation:join` -> 40/min/user
+  - `conversation:leave` -> 40/min/user
+  - `typing:start` -> 80/min/user
+  - `typing:stop` -> 100/min/user
+  - `presence:heartbeat` -> 90/min/user
+
+Server-emitted events used by chat module:
+- `message:new`
+- `message:updated`
+- `message:deleted`
+- `conversation:updated`
+- `conversation:deleted`
+- `conversation:left`
+- `conversation:added`
+- `conversation:removed`
+- `conversation:read`
+- `user:online`
+- `user:offline`
+- `typing:start`
+- `typing:stop`
+- `conversation:join:error`
+- `socket:validation:error`
+- `socket:rate-limited`
+
+Disconnect behavior:
+- User is marked offline only when no socket/tab remains active for that user.
+- `user:offline` is broadcast only for last active disconnect.
+
+Horizontal scaling:
+- Socket.IO Redis adapter is enabled (`@socket.io/redis-adapter`) using Redis pub/sub clients.
+- Room events now work across multiple backend instances.
+
+Observability:
+- Chat HTTP requests are logged with status and latency.
+- Chat domain actions emit structured audit logs.
+- Metrics counters are tracked in Redis (requests, failures, rate-limit hits, uploads rejected, etc.).
+- Abuse alerts are emitted when rate-limit/rejection signals cross threshold (`ABUSE_ALERT_THRESHOLD`).
+
+Relevant env flags:
+- `CHAT_UPLOAD_PRIVATE_STORAGE` (`true`/`false`, default `false`)
+- `CHAT_VIRUS_SCAN_COMMAND` (optional command, uses `{file}` placeholder if provided)
+- `CHAT_VIRUS_SCAN_TIMEOUT_MS` (default `15000`)
+- `ABUSE_ALERT_THRESHOLD` (default `20` per minute signal bucket)
+- `METRIC_TTL_SECONDS` (default `86400`)
+
+---
+
 ## Roles
 
 | Role | Value |
@@ -511,6 +817,7 @@ No body required. Manual API (admin-triggered) that marks `APPROVED` leaves as `
 | Extra Work | `/extrawork` |
 | Holidays | `/holiday` |
 | Leave | `/leave` |
+| Chat | `/chat` |
 
 ---
 

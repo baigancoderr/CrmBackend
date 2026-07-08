@@ -28,6 +28,12 @@ const memberSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    unreadCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
   },
   {
     _id: false,

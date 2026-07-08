@@ -1,29 +1,42 @@
 const Conversation = require("./conversation.model");
 const Message = require("./message.model");
 const User = require("../user/user.model");
+const path = require("path");
+const fs = require("fs/promises");
+const {
+  logAuditEvent,
+  incrementMetric,
+} = require("../../utils/observability");
 
-const GROUP_CREATOR_ROLES = [
+// Group create/manage allowed only for these system roles.
+const GROUP_MANAGER_ROLES = [
   "SUPER_ADMIN",
   "HR",
   "PROJECT_MANAGER",
 ];
 
-const GROUP_OVERRIDE_ROLES = [
-  "SUPER_ADMIN",
-  "HR",
-];
-
 const USER_POPULATE_FIELDS =
   "name employeeId role designation department profilePhoto";
+
+const isPrivateStorageEnabled =
+  process.env.CHAT_UPLOAD_PRIVATE_STORAGE === "true";
 
 const getActiveMember = (conversation, userId) => {
   const memberId = userId.toString();
 
-  return conversation.members.find(
-    (member) =>
-      member.user.toString() === memberId &&
-      !member.leftAt
-  );
+  return conversation.members.find((member) => {
+    if (member.leftAt) {
+      return false;
+    }
+
+    // Supports both raw ObjectId and populated user object.
+    const memberUserId =
+      member.user && member.user._id
+        ? member.user._id.toString()
+        : member.user?.toString();
+
+    return memberUserId === memberId;
+  });
 };
 
 const assertActiveMember = (conversation, userId) => {
@@ -40,22 +53,27 @@ const assertActiveMember = (conversation, userId) => {
   return member;
 };
 
-const assertGroupAdmin = (conversation, userId, userRole) => {
-  assertActiveMember(conversation, userId);
+const assertGroupManager = (conversation, userId, userRole) => {
+  if (conversation.isDeleted) {
+    throw new Error("Conversation not found");
+  }
 
-  if (GROUP_OVERRIDE_ROLES.includes(userRole)) {
+  // HR / PM / Super Admin can manage any group (membership not required).
+  if (GROUP_MANAGER_ROLES.includes(userRole)) {
     return;
   }
 
-  const member = getActiveMember(conversation, userId);
-
-  if (!member || member.role !== "ADMIN") {
-    throw new Error("Only group admin can perform this action");
-  }
+  throw new Error(
+    "Only HR, Project Manager or Super Admin can manage groups"
+  );
 };
 
 const canCreateGroup = (role) => {
-  return GROUP_CREATOR_ROLES.includes(role);
+  return GROUP_MANAGER_ROLES.includes(role);
+};
+
+const isGroupManagerRole = (role) => {
+  return GROUP_MANAGER_ROLES.includes(role);
 };
 
 const normalizeUserIds = (userIds = []) => {
@@ -164,13 +182,121 @@ const getUnreadCountForConversation = async (
   });
 };
 
+const buildMessagePreviewFromType = (type, content) => {
+  const normalizedContent =
+    typeof content === "string" ? content.trim() : "";
+
+  if (type === "IMAGE") {
+    return "📷 Image";
+  }
+
+  if (type === "FILE") {
+    return "📎 File";
+  }
+
+  return normalizedContent;
+};
+
+const refreshConversationLastMessage = async (
+  conversationId
+) => {
+  const latestMessage = await Message.findOne({
+    conversation: conversationId,
+    isDeletedForAll: false,
+  })
+    .sort({ createdAt: -1 })
+    .select("type content sender createdAt")
+    .lean();
+
+  if (!latestMessage) {
+    await Conversation.findByIdAndUpdate(conversationId, {
+      lastMessage: {
+        text: "",
+        sender: null,
+        sentAt: null,
+      },
+    });
+
+    return;
+  }
+
+  await Conversation.findByIdAndUpdate(conversationId, {
+    lastMessage: {
+      text: buildMessagePreviewFromType(
+        latestMessage.type,
+        latestMessage.content
+      ),
+      sender: latestMessage.sender || null,
+      sentAt: latestMessage.createdAt,
+    },
+  });
+};
+
+const canAccessConversation = async (
+  conversationId,
+  userId
+) => {
+  const conversation = await Conversation.findOne({
+    _id: conversationId,
+    isDeleted: false,
+    members: {
+      $elemMatch: {
+        user: userId,
+        leftAt: null,
+      },
+    },
+  })
+    .select("_id")
+    .lean();
+
+  return Boolean(conversation);
+};
+
+const recomputeUnreadCounters = async (conversationId) => {
+  const conversation = await Conversation.findById(
+    conversationId
+  );
+
+  if (!conversation) {
+    return;
+  }
+
+  let changed = false;
+
+  for (const member of conversation.members) {
+    if (member.leftAt) {
+      if (member.unreadCount !== 0) {
+        member.unreadCount = 0;
+        changed = true;
+      }
+      continue;
+    }
+
+    const unreadCount = await getUnreadCountForConversation(
+      conversation,
+      member
+    );
+
+    if ((member.unreadCount || 0) !== unreadCount) {
+      member.unreadCount = unreadCount;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await conversation.save();
+  }
+};
+
 const formatConversation = async (conversation, userId) => {
   const member = getActiveMember(conversation, userId);
   const unreadCount = member
-    ? await getUnreadCountForConversation(
-        conversation,
-        member
-      )
+    ? typeof member.unreadCount === "number"
+      ? member.unreadCount
+      : await getUnreadCountForConversation(
+          conversation,
+          member
+        )
     : 0;
 
   let displayName = conversation.name;
@@ -226,6 +352,22 @@ const createSystemMessage = async (
     },
   });
 
+  const conversation = await Conversation.findById(
+    conversationId
+  );
+
+  if (conversation) {
+    for (const member of conversation.members) {
+      if (member.leftAt) {
+        continue;
+      }
+
+      member.unreadCount = (member.unreadCount || 0) + 1;
+    }
+
+    await conversation.save();
+  }
+
   if (io) {
     io.to(`conversation:${conversationId}`).emit(
       "message:new",
@@ -235,6 +377,10 @@ const createSystemMessage = async (
       }
     );
   }
+
+  await incrementMetric("chat_system_message_created", {
+    conversationId: conversationId.toString(),
+  });
 
   return savedMessage;
 };
@@ -296,6 +442,7 @@ const createConversation = async (payload, user) => {
       role: "ADMIN",
       joinedAt: new Date(),
       lastReadAt: new Date(),
+      unreadCount: 0,
     },
     ...validatedMemberIds
       .filter(
@@ -307,6 +454,7 @@ const createConversation = async (payload, user) => {
         role: "MEMBER",
         joinedAt: new Date(),
         lastReadAt: null,
+        unreadCount: 0,
       })),
   ];
 
@@ -329,13 +477,23 @@ const createConversation = async (payload, user) => {
     );
   }
 
+  await incrementMetric("chat_conversation_created", {
+    type,
+    createdBy: user.id.toString(),
+  });
+  await logAuditEvent("chat_conversation_created", {
+    conversationId: conversation._id.toString(),
+    type,
+    createdBy: user.id.toString(),
+  });
+
   return formatConversation(
     populatedConversation.toObject(),
     user.id
   );
 };
 
-const getMyConversations = async (userId, query = {}) => {
+const getMyConversations = async (userId, query = {}, userRole = "") => {
   const page = Math.max(Number(query.page) || 1, 1);
   const limit = Math.min(
     Math.max(Number(query.limit) || 20, 1),
@@ -343,7 +501,16 @@ const getMyConversations = async (userId, query = {}) => {
   );
   const skip = (page - 1) * limit;
 
-  const filter = buildConversationQueryForUser(userId);
+  // Managers can see all active groups + their own DMs.
+  const filter = isGroupManagerRole(userRole)
+    ? {
+        isDeleted: false,
+        $or: [
+          buildConversationQueryForUser(userId),
+          { type: "GROUP" },
+        ],
+      }
+    : buildConversationQueryForUser(userId);
 
   const [conversations, totalRecords] = await Promise.all([
     populateConversation(
@@ -370,7 +537,11 @@ const getMyConversations = async (userId, query = {}) => {
   };
 };
 
-const getConversationById = async (conversationId, userId) => {
+const getConversationById = async (
+  conversationId,
+  userId,
+  userRole = ""
+) => {
   const conversation = await populateConversation(
     Conversation.findById(conversationId)
   );
@@ -379,7 +550,18 @@ const getConversationById = async (conversationId, userId) => {
     throw new Error("Conversation not found");
   }
 
-  assertActiveMember(conversation, userId);
+  if (conversation.isDeleted) {
+    throw new Error("Conversation not found");
+  }
+
+  if (
+    !(
+      isGroupManagerRole(userRole) &&
+      conversation.type === "GROUP"
+    )
+  ) {
+    assertActiveMember(conversation, userId);
+  }
 
   return formatConversation(
     conversation.toObject(),
@@ -404,7 +586,7 @@ const updateConversation = async (
     throw new Error("Only group conversations can be updated");
   }
 
-  assertGroupAdmin(conversation, user.id, user.role);
+  assertGroupManager(conversation, user.id, user.role);
 
   if (payload.name !== undefined) {
     if (!payload.name.trim()) {
@@ -427,6 +609,14 @@ const updateConversation = async (
   const populatedConversation = await populateConversation(
     Conversation.findById(conversation._id)
   );
+
+  await incrementMetric("chat_conversation_updated", {
+    actorId: user.id.toString(),
+  });
+  await logAuditEvent("chat_conversation_updated", {
+    conversationId: conversationId.toString(),
+    actorId: user.id.toString(),
+  });
 
   return formatConversation(
     populatedConversation.toObject(),
@@ -451,7 +641,7 @@ const deleteConversation = async (
     throw new Error("Only group conversations can be deleted");
   }
 
-  assertGroupAdmin(conversation, user.id, user.role);
+  assertGroupManager(conversation, user.id, user.role);
 
   conversation.isDeleted = true;
   conversation.deletedAt = new Date();
@@ -472,6 +662,14 @@ const deleteConversation = async (
       );
     });
   }
+
+  await incrementMetric("chat_conversation_deleted", {
+    actorId: user.id.toString(),
+  });
+  await logAuditEvent("chat_conversation_deleted", {
+    conversationId: conversationId.toString(),
+    actorId: user.id.toString(),
+  });
 
   return {
     conversationId,
@@ -502,6 +700,7 @@ const leaveConversation = async (
     .lean();
 
   member.leftAt = new Date();
+  member.unreadCount = 0;
 
   const activeAdmins = conversation.members.filter(
     (entry) => !entry.leftAt && entry.role === "ADMIN"
@@ -536,6 +735,10 @@ const leaveConversation = async (
     });
   }
 
+  await incrementMetric("chat_conversation_left", {
+    userId: userId.toString(),
+  });
+
   return {
     conversationId,
     leftAt: member.leftAt,
@@ -544,7 +747,8 @@ const leaveConversation = async (
 
 const getConversationMembers = async (
   conversationId,
-  userId
+  userId,
+  userRole = ""
 ) => {
   const conversation = await populateConversation(
     Conversation.findById(conversationId)
@@ -554,7 +758,16 @@ const getConversationMembers = async (
     throw new Error("Conversation not found");
   }
 
-  assertActiveMember(conversation, userId);
+  if (conversation.isDeleted) {
+    throw new Error("Conversation not found");
+  }
+
+  // Managers can view members of any group; others must be active members.
+  if (!isGroupManagerRole(userRole)) {
+    assertActiveMember(conversation, userId);
+  } else if (conversation.type !== "GROUP") {
+    assertActiveMember(conversation, userId);
+  }
 
   return conversation.members
     .filter((member) => !member.leftAt)
@@ -563,6 +776,7 @@ const getConversationMembers = async (
       role: member.role,
       joinedAt: member.joinedAt,
       lastReadAt: member.lastReadAt,
+      unreadCount: member.unreadCount || 0,
     }));
 };
 
@@ -584,7 +798,7 @@ const addMembers = async (
     throw new Error("Members can only be added to groups");
   }
 
-  assertGroupAdmin(conversation, user.id, user.role);
+  assertGroupManager(conversation, user.id, user.role);
 
   const normalizedMemberIds = normalizeUserIds(memberIds);
 
@@ -620,12 +834,14 @@ const addMembers = async (
       existingMember.joinedAt = new Date();
       existingMember.role = "MEMBER";
       existingMember.lastReadAt = null;
+      existingMember.unreadCount = 0;
     } else {
       conversation.members.push({
         user: memberId,
         role: "MEMBER",
         joinedAt: new Date(),
         lastReadAt: null,
+        unreadCount: 0,
       });
     }
 
@@ -660,7 +876,11 @@ const addMembers = async (
     );
   }
 
-  return getConversationMembers(conversationId, user.id);
+  await incrementMetric("chat_members_added", {
+    actorId: user.id.toString(),
+  });
+
+  return getConversationMembers(conversationId, user.id, user.role);
 };
 
 const removeMember = async (
@@ -681,7 +901,7 @@ const removeMember = async (
     throw new Error("Members can only be removed from groups");
   }
 
-  assertGroupAdmin(conversation, user.id, user.role);
+  assertGroupManager(conversation, user.id, user.role);
 
   if (targetUserId.toString() === user.id.toString()) {
     throw new Error("Use leave endpoint to remove yourself");
@@ -701,6 +921,7 @@ const removeMember = async (
     .lean();
 
   member.leftAt = new Date();
+  member.unreadCount = 0;
   await conversation.save();
 
   await createSystemMessage(
@@ -718,13 +939,18 @@ const removeMember = async (
     );
   }
 
-  return getConversationMembers(conversationId, user.id);
+  await incrementMetric("chat_member_removed", {
+    actorId: user.id.toString(),
+  });
+
+  return getConversationMembers(conversationId, user.id, user.role);
 };
 
 const getMessages = async (
   conversationId,
   userId,
-  query = {}
+  query = {},
+  userRole = ""
 ) => {
   const conversation = await Conversation.findById(
     conversationId
@@ -734,7 +960,18 @@ const getMessages = async (
     throw new Error("Conversation not found");
   }
 
-  assertActiveMember(conversation, userId);
+  if (conversation.isDeleted) {
+    throw new Error("Conversation not found");
+  }
+
+  if (
+    !(
+      isGroupManagerRole(userRole) &&
+      conversation.type === "GROUP"
+    )
+  ) {
+    assertActiveMember(conversation, userId);
+  }
 
   const limit = Math.min(
     Math.max(Number(query.limit) || 50, 1),
@@ -788,8 +1025,10 @@ const sendMessage = async (
 
   const { content, type = "TEXT", replyTo, mentions = [] } =
     payload;
+  const normalizedContent =
+    typeof content === "string" ? content.trim() : "";
 
-  if (!content?.trim() && type === "TEXT") {
+  if (!normalizedContent && type === "TEXT") {
     throw new Error("Message content is required");
   }
 
@@ -816,7 +1055,7 @@ const sendMessage = async (
     conversation: conversationId,
     sender: user.id,
     type,
-    content: content.trim(),
+    content: normalizedContent,
     fileMeta: payload.fileMeta || undefined,
     replyTo: replyTo || null,
     mentions: validMentions,
@@ -828,14 +1067,10 @@ const sendMessage = async (
     ],
   });
 
-  const previewText =
-    type === "TEXT"
-      ? content.trim()
-      : type === "IMAGE"
-        ? "📷 Image"
-        : type === "FILE"
-          ? "📎 File"
-          : content.trim();
+  const previewText = buildMessagePreviewFromType(
+    type,
+    normalizedContent
+  );
 
   await Conversation.findByIdAndUpdate(conversationId, {
     lastMessage: {
@@ -848,15 +1083,25 @@ const sendMessage = async (
   const updatedConversation = await Conversation.findById(
     conversationId
   );
-  const senderMember = getActiveMember(
-    updatedConversation,
-    user.id
-  );
+  const sentAt = new Date();
 
-  if (senderMember) {
-    senderMember.lastReadAt = new Date();
-    await updatedConversation.save();
+  for (const member of updatedConversation.members) {
+    if (member.leftAt) {
+      continue;
+    }
+
+    if (
+      member.user.toString() === user.id.toString()
+    ) {
+      member.lastReadAt = sentAt;
+      member.unreadCount = 0;
+      continue;
+    }
+
+    member.unreadCount = (member.unreadCount || 0) + 1;
   }
+
+  await updatedConversation.save();
 
   const populatedMessage = await populateMessage(
     Message.findById(message._id)
@@ -881,6 +1126,11 @@ const sendMessage = async (
     );
   }
 
+  await incrementMetric("chat_message_sent", {
+    senderId: user.id.toString(),
+    type,
+  });
+
   return savedMessage;
 };
 
@@ -891,12 +1141,15 @@ const sendFileMessage = async (
   io
 ) => {
   const isImage = file.mimetype.startsWith("image/");
+  const filePath = isPrivateStorageEnabled
+    ? `/api/chat/files/${file.filename}`
+    : `/uploads/chat/${file.filename}`;
 
   return sendMessage(
     conversationId,
     {
       type: isImage ? "IMAGE" : "FILE",
-      content: `/uploads/chat/${file.filename}`,
+      content: filePath,
       fileMeta: {
         name: file.originalname,
         size: file.size,
@@ -939,6 +1192,7 @@ const editMessage = async (
   message.content = content.trim();
   message.editedAt = new Date();
   await message.save();
+  await refreshConversationLastMessage(message.conversation);
 
   const populatedMessage = await populateMessage(
     Message.findById(message._id)
@@ -985,6 +1239,10 @@ const deleteMessage = async (
     message.isDeletedForAll = true;
     message.content = "This message was deleted";
     await message.save();
+    await recomputeUnreadCounters(message.conversation);
+    await refreshConversationLastMessage(
+      message.conversation
+    );
   } else {
     if (
       !message.deletedFor.some(
@@ -1007,6 +1265,11 @@ const deleteMessage = async (
     );
   }
 
+  await incrementMetric("chat_message_deleted", {
+    userId: userId.toString(),
+    scope,
+  });
+
   return {
     messageId: message._id,
     scope,
@@ -1016,7 +1279,8 @@ const deleteMessage = async (
 const markConversationAsRead = async (
   conversationId,
   userId,
-  io
+  io,
+  userRole = ""
 ) => {
   const conversation = await Conversation.findById(
     conversationId
@@ -1026,10 +1290,32 @@ const markConversationAsRead = async (
     throw new Error("Conversation not found");
   }
 
-  const member = assertActiveMember(conversation, userId);
+  if (conversation.isDeleted) {
+    throw new Error("Conversation not found");
+  }
+
+  const member = getActiveMember(conversation, userId);
+
+  // Managers can open groups without membership; skip read update then.
+  if (!member) {
+    if (
+      isGroupManagerRole(userRole) &&
+      conversation.type === "GROUP"
+    ) {
+      return {
+        conversationId,
+        readAt: null,
+        skipped: true,
+      };
+    }
+
+    throw new Error("You do not have access to this conversation");
+  }
+
   const readAt = new Date();
 
   member.lastReadAt = readAt;
+  member.unreadCount = 0;
   await conversation.save();
 
   await Message.updateMany(
@@ -1059,6 +1345,10 @@ const markConversationAsRead = async (
     );
   }
 
+  await incrementMetric("chat_mark_read", {
+    userId: userId.toString(),
+  });
+
   return {
     conversationId,
     readAt,
@@ -1070,26 +1360,68 @@ const getUnreadCount = async (userId) => {
     buildConversationQueryForUser(userId)
   ).lean();
 
-  let totalUnread = 0;
-
-  for (const conversation of conversations) {
-    const member = getActiveMember(conversation, userId);
-
-    if (!member) {
-      continue;
-    }
-
-    const unread = await getUnreadCountForConversation(
-      conversation,
-      member
-    );
-
-    totalUnread += unread;
-  }
+  const totalUnread = conversations.reduce(
+    (sum, conversation) => {
+      const member = getActiveMember(conversation, userId);
+      return sum + Number(member?.unreadCount || 0);
+    },
+    0
+  );
 
   return {
     totalUnread,
   };
+};
+
+const getFileAbsolutePath = (fileName) => {
+  const folder = isPrivateStorageEnabled
+    ? "../../uploads-private/chat"
+    : "../../uploads/chat";
+
+  return path.join(__dirname, folder, fileName);
+};
+
+const getFileContentCandidates = (fileName) => {
+  return [
+    `/uploads/chat/${fileName}`,
+    `/api/chat/files/${fileName}`,
+  ];
+};
+
+const getChatFilePathForUser = async (fileName, userId) => {
+  const message = await Message.findOne({
+    type: { $in: ["IMAGE", "FILE"] },
+    content: { $in: getFileContentCandidates(fileName) },
+  })
+    .select("conversation")
+    .lean();
+
+  if (!message) {
+    throw new Error("File not found");
+  }
+
+  const hasAccess = await canAccessConversation(
+    message.conversation,
+    userId
+  );
+
+  if (!hasAccess) {
+    throw new Error("You do not have access to this file");
+  }
+
+  const absolutePath = getFileAbsolutePath(fileName);
+
+  try {
+    await fs.access(absolutePath);
+  } catch (_error) {
+    throw new Error("File not found");
+  }
+
+  await incrementMetric("chat_file_accessed", {
+    userId: userId.toString(),
+  });
+
+  return absolutePath;
 };
 
 let socketIo = null;
@@ -1102,6 +1434,7 @@ const getSocketIo = () => socketIo;
 
 module.exports = {
   canCreateGroup,
+  canAccessConversation,
   createConversation,
   getMyConversations,
   getConversationById,
@@ -1118,6 +1451,7 @@ module.exports = {
   deleteMessage,
   markConversationAsRead,
   getUnreadCount,
+  getChatFilePathForUser,
   setSocketIo,
   getSocketIo,
 };
