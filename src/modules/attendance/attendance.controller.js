@@ -198,11 +198,13 @@ const getMonthlyTeamSheet = async (req, res) => {
   try {
     const month = Number(req.query.month);
     const year = Number(req.query.year);
+    const employeeId = req.query.employeeId;
 
     const result =
       await attendanceService.getMonthlyTeamSheet(
         month,
-        year
+        year,
+        employeeId
       );
 
     return res.status(200).json(result);

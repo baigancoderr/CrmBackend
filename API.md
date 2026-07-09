@@ -1,6 +1,6 @@
 # CRM Backend API Reference
 
-Base URL: `http://localhost:5000/api`
+Base URL: `http://localhost:6000/api`
 
 All protected routes require:
 

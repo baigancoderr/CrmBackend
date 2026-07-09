@@ -1582,7 +1582,7 @@ const getEmployeeAttendance =
     };
   };
 
-const getMonthlyTeamSheet = async (month, year) => {
+const getMonthlyTeamSheet = async (month, year, employeeId = "") => {
   if (!month || !year || month < 1 || month > 12) {
     throw new Error("Valid month and year are required");
   }
@@ -1590,10 +1590,15 @@ const getMonthlyTeamSheet = async (month, year) => {
   const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
   const lastDay = new Date(year, month, 0).getDate();
   const monthEnd = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
-
-  const activeEmployees = await User.find({
+  const userFilter = {
     isActive: true,
-  })
+  };
+
+  if (String(employeeId || "").trim()) {
+    userFilter._id = String(employeeId).trim();
+  }
+
+  const activeEmployees = await User.find(userFilter)
     .select("employeeId biometricEmpCode name designation department")
     .sort({ name: 1 })
     .lean();

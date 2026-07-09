@@ -1,6 +1,7 @@
 require("dotenv").config();
 
 const http = require("http");
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
@@ -27,21 +28,68 @@ const io = new Server(server, {
   },
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 6000;
 const isBiometricSyncEnabled =
   process.env.ETIME_SYNC_ENABLED !== "false";
 
+const defaultAllowedOrigins = [
+  "https://newofficefrontend.fastsolution.cloud",
+  "https://newofficebackend.fastsolution.cloud",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "http://localhost:6000",
+  "http://127.0.0.1:6000",
+];
+
+const envAllowedOrigins = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = [
+  ...new Set([...defaultAllowedOrigins, ...envAllowedOrigins]),
+];
+
+const isLocalDevOrigin = (origin) =>
+  /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(
+    origin
+  );
+
+const isProduction = process.env.NODE_ENV === "production";
+
+const corsOptions = {
+  origin: isProduction
+    ? (origin, callback) => {
+        if (
+          !origin ||
+          allowedOrigins.includes(origin) ||
+          isLocalDevOrigin(origin)
+        ) {
+          callback(null, true);
+          return;
+        }
+
+        callback(null, false);
+      }
+    : true,
+  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+  credentials: false,
+  optionsSuccessStatus: 204,
+};
+
 // Middlewares
-app.use(cors());
+app.use(cors(corsOptions));
+app.options("/{*splat}", cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
 
 // Routes
 app.use("/api", routes);
-// const express = require("express");
-const path = require("path");
-
-app.use("/uploads",express.static(path.join(__dirname, "uploads")));
+app.use(
+  "/uploads",
+  express.static(path.join(__dirname, "uploads"))
+);
 
 (async () => {
   try {

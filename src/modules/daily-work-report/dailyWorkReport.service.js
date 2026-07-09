@@ -222,6 +222,7 @@ const getAllDailyWorkReports = async (query) => {
     workStatus,
     reviewStatus,
     reportDate,
+    employeeId,
   } = query;
 
   const currentPage = Math.max(Number(page) || 1, 1);
@@ -252,6 +253,10 @@ const getAllDailyWorkReports = async (query) => {
       throw createAppError("Invalid date filter.", 422);
     }
     filter.reportDate = normalizedReportDate;
+  }
+
+  if (employeeId) {
+    filter.employee = String(employeeId).trim();
   }
 
   if (String(search).trim()) {
