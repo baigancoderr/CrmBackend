@@ -111,10 +111,10 @@ const ensureDailyAttendanceRecords = async (dateKey) => {
 };
 
 // Attendance status rules:
-// Check-in: 10:00–10:20 = Present, after 10:20 = Late
+// Check-in: 10:00–10:10 = Present, after 10:10 = Late
 // Check-out: before 16:00 = Half Day, 16:00–18:59 = Early Leave, 19:00+ = Normal checkout
 const ATTENDANCE_RULES = {
-  LATE_GRACE_MINUTES: 20,
+  LATE_GRACE_MINUTES: 10,
   HALF_DAY_CHECKOUT_TIME: "16:00",
 };
 
@@ -161,7 +161,7 @@ const calculateAttendanceMetrics = (
   let workingMinutes = 0;
   let status = "PRESENT";
 
-  // Check-in: Present within grace window, Late after 10:20 AM
+  // Check-in: Present within grace window, Late after grace end time.
   if (clockInDate > lateGraceEnd) {
     lateMinutes = Math.floor(
       (clockInDate - lateGraceEnd) / 60000
@@ -1089,7 +1089,8 @@ const formatMonthlySheetCell = (record, isWeekend, isFutureDate) => {
   }
 
   if (record.status === "EARLY_LEAVE") {
-    return "EARLY LEAVE";
+    const inLabel = record.clockIn ? formatTimePart(record.clockIn) : "";
+    return inLabel ? `${inLabel} - EL` : "EL";
   }
 
   const hasClockIn = Boolean(record.clockIn);
@@ -1252,9 +1253,23 @@ const getAttendanceDashboardDetails = async (dateKey) => {
     (record) => record.clockIn && !record.clockOut
   );
 
+  const isEmployeeAbsent = (attendance) => {
+    if (!attendance) {
+      return true;
+    }
+
+    if (attendance.status === "ABSENT") {
+      return true;
+    }
+
+    return !attendance.clockIn && !attendance.clockOut;
+  };
+
   const totalEmployees = activeEmployees.length;
-  const markedToday = todayRecords.length;
-  const absent = Math.max(totalEmployees - markedToday, 0);
+  const absent = activeEmployees.filter((employee) => {
+    const record = attendanceByEmployeeId.get(String(employee._id));
+    return isEmployeeAbsent(record);
+  }).length;
 
   const attendanceRate =
     totalEmployees > 0
@@ -1377,8 +1392,8 @@ const getAttendanceDashboardDetails = async (dateKey) => {
     }
   );
 
-  const absentEmployees = employeeAttendanceList.filter(
-    (item) => !item.attendance
+  const absentEmployees = employeeAttendanceList.filter((item) =>
+    isEmployeeAbsent(item.attendance)
   );
 
   return {

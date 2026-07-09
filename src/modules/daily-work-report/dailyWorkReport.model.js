@@ -76,7 +76,7 @@ const dailyWorkReportSchema = new mongoose.Schema(
     workStatus: {
       type: String,
       enum: ["COMPLETED", "IN_PROGRESS", "BLOCKED", "ON_HOLD"],
-      required: true,
+      required: false,
     },
     blockers: {
       type: String,

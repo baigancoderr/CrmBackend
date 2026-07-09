@@ -81,7 +81,8 @@ const corsOptions = {
 // Middlewares
 app.use(cors(corsOptions));
 app.options("/{*splat}", cors(corsOptions));
-app.use(express.json());
+// Daily work report attachments are sent as base64 JSON (up to 5 MB file).
+app.use(express.json({ limit: "8mb" }));
 app.use(cookieParser());
 
 // Routes
@@ -90,6 +91,7 @@ app.use(
   "/uploads",
   express.static(path.join(__dirname, "uploads"))
 );
+
 
 (async () => {
   try {

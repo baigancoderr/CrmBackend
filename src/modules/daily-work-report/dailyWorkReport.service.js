@@ -17,20 +17,41 @@ const ALLOWED_ATTACHMENT_MIME_TYPES = [
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ];
 
+const DATE_STRING_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
 const createAppError = (message, statusCode = 400) => {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
 };
 
-const normalizeDateString = (value) => {
-  const parsed = new Date(`${value}T00:00:00`);
+const getTodayDateString = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
-  if (Number.isNaN(parsed.getTime())) {
+const normalizeDateString = (value) => {
+  const normalized = String(value || "").trim();
+
+  if (!DATE_STRING_REGEX.test(normalized)) {
     return "";
   }
 
-  return parsed.toISOString().split("T")[0];
+  const [year, month, day] = normalized.split("-").map(Number);
+  const parsed = new Date(year, month - 1, day);
+
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return "";
+  }
+
+  return normalized;
 };
 
 const validateAttachment = (attachment) => {
@@ -95,7 +116,6 @@ const submitDailyWorkReport = async (userId, payload) => {
   const projectName = String(payload.projectName || "").trim();
   const reportDate = normalizeDateString(payload.reportDate || "");
   const workDescription = String(payload.workDescription || "").trim();
-  const workStatus = String(payload.workStatus || "").trim().toUpperCase();
   const reportingManagerId = String(payload.reportingManagerId || "").trim();
   const blockers = String(payload.blockers || "").trim();
   const attachment = validateAttachment(payload.attachment);
@@ -112,15 +132,11 @@ const submitDailyWorkReport = async (userId, payload) => {
     throw createAppError("Work description is required.", 422);
   }
 
-  if (!WORK_STATUS_OPTIONS.includes(workStatus)) {
-    throw createAppError("Invalid work status.", 422);
-  }
-
   if (!reportingManagerId) {
     throw createAppError("Reporting manager is required.", 422);
   }
 
-  const todayDate = new Date().toISOString().split("T")[0];
+  const todayDate = getTodayDateString();
   if (reportDate > todayDate) {
     throw createAppError("Future date is not allowed.", 422);
   }
@@ -150,7 +166,6 @@ const submitDailyWorkReport = async (userId, payload) => {
     projectName,
     reportDate,
     workDescription,
-    workStatus,
     blockers,
     attachment,
   });
