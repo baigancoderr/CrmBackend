@@ -92,6 +92,10 @@ app.use(
   express.static(path.join(__dirname, "uploads"))
 );
 
+// Global Error Handler
+const errorMiddleware = require("./src/middleware/error.middleware");
+app.use(errorMiddleware);
+
 
 (async () => {
   try {

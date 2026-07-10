@@ -18,5 +18,7 @@ router.use("/daily-work-report", require("../modules/daily-work-report/dailyWork
 
 router.use("/chat", require("../modules/chat/chat.routes"));
 
+router.use("/notes", require("../modules/notes/notes.routes"));
+router.use("/folders", require("../modules/notes/folder.routes"));
 
 module.exports = router;
