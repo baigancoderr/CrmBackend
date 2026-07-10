@@ -818,6 +818,8 @@ Relevant env flags:
 | Holidays | `/holiday` |
 | Leave | `/leave` |
 | Chat | `/chat` |
+| Notes | `/notes` |
+| Folders | `/folders` |
 
 ---
 
@@ -833,3 +835,123 @@ Relevant env flags:
 | Update | `PATCH` | `/users/:id` | HR, Super Admin |
 | Delete | `DELETE` | `/users/:id` | HR, Super Admin |
 | Update status | `PATCH` | `/users/status/:id` | HR, Super Admin |
+
+---
+
+## Notes & Folders Module
+
+### Folders (`/folders`)
+
+All folders endpoints require JWT Authentication.
+
+#### Create Folder — `POST /folders`
+- **Request Body:**
+  ```json
+  {
+    "name": "Project Ideas"
+  }
+  ```
+- **Response (201):** Folder data object.
+
+#### Get My Folders — `GET /folders`
+- **Response (200):** Array of folders owned by the authenticated employee.
+
+#### Update Folder — `PATCH /folders/:id`
+- **Request Body:**
+  ```json
+  {
+    "name": "New Folder Name"
+  }
+  ```
+- **Response (200):** Updated folder data object.
+
+#### Delete Folder — `DELETE /folders/:id`
+- **Response (200):** Success message. All notes in this folder are unlinked (folder set to null).
+
+---
+
+### Notes (`/notes`)
+
+All notes endpoints require JWT Authentication.
+
+#### Create Note — `POST /notes`
+- **Request Format:** `multipart/form-data`
+- **Request Fields:**
+  - `title` (string, required)
+  - `content` (string, optional)
+  - `folder` (ObjectId string, optional folder)
+  - `tags` (array of strings, or comma-separated string, optional)
+  - `isPinned` (boolean, optional)
+  - `isFavorite` (boolean, optional)
+  - `attachments` (file upload, optional multiple files: Images, PDF, DOC, DOCX, XLS, XLSX)
+- **Response (201):** Created note object with populated owner details.
+
+#### Get My Notes — `GET /notes`
+- **Request Query Params:**
+  - `page` (number, default: 1)
+  - `limit` (number, default: 10)
+  - `sortBy` (`latest` or `oldest`, default: `latest`)
+- **Response (200):** Paginated notes list including both owned notes and notes shared with the user.
+
+#### Get Single Note — `GET /notes/:id`
+- **Response (200):** Populated note details. Accessible by owner or any shared user (View/Edit).
+
+#### Update Note — `PATCH /notes/:id`
+- **Request Format:** `multipart/form-data`
+- **Request Fields (at least one):**
+  - `title`, `content`, `folder`, `tags`, `isPinned`, `isFavorite`
+  - `attachments` (new file uploads)
+  - `removeAttachments` (array of attachment file URLs to remove)
+- **Response (200):** Updated note details. Accessible by owner or shared user with `Edit` permission.
+
+#### Soft Delete Note — `DELETE /notes/:id`
+- **Response (200):** Moves note to Trash (`isDeleted: true`). Accessible by owner only.
+
+#### Restore Note — `PATCH /notes/:id/restore`
+- **Response (200):** Restores note from Trash (`isDeleted: false`). Accessible by owner only.
+
+#### Permanent Delete Note — `DELETE /notes/:id/permanent`
+- **Response (200):** Permanently deletes the note and its attachment files on disk. Accessible by owner only.
+
+#### Pin Note — `PATCH /notes/:id/pin`
+- **Response (200):** Toggles `isPinned` state. Accessible by owner or shared user with `Edit` permission.
+
+#### Favorite Note — `PATCH /notes/:id/favorite`
+- **Response (200):** Toggles `isFavorite` state. Accessible by owner or shared user with `Edit` permission.
+
+#### Archive Note — `PATCH /notes/:id/archive`
+- **Response (200):** Toggles `isArchived` state. Accessible by owner only.
+
+#### Get Archived Notes — `GET /notes/archive`
+- **Response (200):** Paginated list of user's archived notes.
+
+#### Get Trash Notes — `GET /notes/trash`
+- **Response (200):** Paginated list of user's trashed notes.
+
+#### Search Notes — `GET /notes/search`
+- **Request Query Params:**
+  - `q` (search string)
+  - `folder` (folder ID)
+  - `page`, `limit`, `sortBy`
+- **Response (200):** Paginated matching notes list. Searches titles, content, and tags.
+
+---
+
+### Note Sharing (`/notes/:id/share`)
+
+#### Share Note — `POST /notes/:id/share`
+- **Request Body:**
+  ```json
+  {
+    "sharedWith": "64bfd4e0e64391e8432a5103",
+    "permission": "Edit"
+  }
+  ```
+- **Response (200):** Created/updated share record. Accessible by note owner only.
+
+#### Remove Shared Access — `DELETE /notes/:id/share/:userId`
+- **Response (200):** Success message. Accessible by note owner only.
+
+#### Get Shared Users — `GET /notes/:id/share`
+- **Response (200):** Array of all share records for this note populated with employee info. Accessible by owner and any shared users.
+
