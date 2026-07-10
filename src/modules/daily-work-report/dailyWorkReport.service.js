@@ -229,7 +229,7 @@ const getMyDailyWorkReports = async (userId, query) => {
   };
 };
 
-const getAllDailyWorkReports = async (query) => {
+const getAllDailyWorkReports = async (query, reviewer = null) => {
   const {
     page = 1,
     limit = 10,
@@ -245,6 +245,11 @@ const getAllDailyWorkReports = async (query) => {
   const skip = (currentPage - 1) * perPage;
 
   const filter = {};
+
+  // TL should only see reports where employee selected that TL as reporting manager.
+  if (reviewer?.role === "TL") {
+    filter.reportingManager = reviewer.id;
+  }
 
   if (workStatus) {
     const normalizedWorkStatus = String(workStatus).trim().toUpperCase();
@@ -313,6 +318,13 @@ const reviewDailyWorkReport = async (reportId, reviewer, payload) => {
   const report = await DailyWorkReport.findById(reportId);
   if (!report) {
     throw createAppError("Daily work report not found.", 404);
+  }
+
+  if (
+    reviewer.role === "TL" &&
+    String(report.reportingManager || "") !== String(reviewer.id)
+  ) {
+    throw createAppError("You can review only reports assigned to you.", 403);
   }
 
   const reviewComment = String(payload.comment || "").trim();

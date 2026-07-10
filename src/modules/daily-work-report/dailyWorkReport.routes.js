@@ -6,7 +6,7 @@ const authMiddleware = require("../../middleware/auth.middleware");
 const roleMiddleware = require("../../middleware/role.middleware");
 const dailyWorkReportController = require("./dailyWorkReport.controller");
 
-const SUBMITTER_ROLES = ["EMPLOYEE", "HR"];
+const SUBMITTER_ROLES = ["EMPLOYEE", "HR", "TL"];
 const REVIEWER_ROLES = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL"];
 
 router.get(

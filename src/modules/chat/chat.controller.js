@@ -375,6 +375,53 @@ const getChatFile = async (req, res) => {
   }
 };
 
+const getUsersPresence = async (req, res) => {
+  try {
+    await chatService.touchUserPresence(req.user.id);
+
+    const userIds = String(req.query.userIds || "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
+
+    const presence = await chatService.getUsersPresence(userIds);
+
+    res.set("Cache-Control", "no-store");
+
+    return res.status(200).json({
+      success: true,
+      data: presence,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const forwardMessage = async (req, res) => {
+  try {
+    const messages = await chatService.forwardMessage(
+      req.params.messageId,
+      req.body.targetConversationIds || [],
+      req.user,
+      getIo()
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Message forwarded successfully",
+      data: messages,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 module.exports = {
   createConversation,
   getMyConversations,
@@ -393,4 +440,6 @@ module.exports = {
   markConversationAsRead,
   getUnreadCount,
   getChatFile,
+  getUsersPresence,
+  forwardMessage,
 };

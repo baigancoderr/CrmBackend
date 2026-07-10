@@ -220,7 +220,8 @@ employmentType: {
         "FULL_TIME",
         "PART_TIME",
         "INTERN",
-        "CONTRACT"
+        "CONTRACT",
+        "FREELANCER"
     ],
     default: "FULL_TIME"
 },

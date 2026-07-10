@@ -25,6 +25,21 @@ const buildFullName = (firstName, lastName, fallbackName = "") => {
     return (fallbackName || "").trim();
 };
 
+const ensureEmploymentTypeDefaults = async () => {
+    await User.updateMany(
+        {
+            $or: [
+                { employmentType: { $exists: false } },
+                { employmentType: null },
+                { employmentType: "" },
+            ],
+        },
+        {
+            $set: { employmentType: "FULL_TIME" },
+        }
+    );
+};
+
 const rolePermissions = {
     SUPER_ADMIN: ["HR", "PROJECT_MANAGER", "TL", "ACCOUNTANT", "EMPLOYEE"],
     // HR can manage other HR accounts too, but not Super Admin.
@@ -211,6 +226,8 @@ const createUser = async (currentUser, body) => {
 
 
 const getProfile = async (userId) => {
+    await ensureEmploymentTypeDefaults();
+
     const user =
         await User.findById(userId)
             .select("-password")
@@ -328,6 +345,8 @@ const updateProfilePhoto = async (userId, profilePhoto) => {
 };
 
 const getAllUsers = async () => {
+    await ensureEmploymentTypeDefaults();
+
     const users = await User.find()
         .select("-password")
         .populate(
@@ -346,6 +365,8 @@ const getAllUsers = async () => {
 };
 
 const getVisibleTeamMembers = async (currentUser) => {
+    await ensureEmploymentTypeDefaults();
+
     const currentUserRecord = await User.findById(currentUser.id).select(
         "department manager teamLeader"
     );
@@ -406,6 +427,8 @@ const getVisibleTeamMembers = async (currentUser) => {
 };
 
 const getUserById = async (userId) => {
+    await ensureEmploymentTypeDefaults();
+
     const user = await User.findById(userId)
         .select("-password")
         .populate(

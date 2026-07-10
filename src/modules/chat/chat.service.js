@@ -3,6 +3,7 @@ const Message = require("./message.model");
 const User = require("../user/user.model");
 const path = require("path");
 const fs = require("fs/promises");
+const { redisClient } = require("../../config/redis");
 const {
   logAuditEvent,
   incrementMetric,
@@ -159,6 +160,14 @@ const populateMessage = (query) => {
     .populate("sender", USER_POPULATE_FIELDS)
     .populate("mentions", USER_POPULATE_FIELDS)
     .populate({
+      path: "forwardedFrom",
+      select: "content type sender conversation",
+      populate: {
+        path: "sender",
+        select: USER_POPULATE_FIELDS,
+      },
+    })
+    .populate({
       path: "replyTo",
       populate: {
         path: "sender",
@@ -195,6 +204,37 @@ const buildMessagePreviewFromType = (type, content) => {
   }
 
   return normalizedContent;
+};
+
+const getVisibleLastMessageForUser = async (
+  conversationId,
+  userId
+) => {
+  const latestMessage = await Message.findOne({
+    conversation: conversationId,
+    isDeletedForAll: false,
+    deletedFor: { $ne: userId },
+  })
+    .sort({ createdAt: -1 })
+    .select("type content sender createdAt")
+    .lean();
+
+  if (!latestMessage) {
+    return {
+      text: "",
+      sender: null,
+      sentAt: null,
+    };
+  }
+
+  return {
+    text: buildMessagePreviewFromType(
+      latestMessage.type,
+      latestMessage.content
+    ),
+    sender: latestMessage.sender || null,
+    sentAt: latestMessage.createdAt,
+  };
 };
 
 const refreshConversationLastMessage = async (
@@ -301,6 +341,7 @@ const formatConversation = async (conversation, userId) => {
 
   let displayName = conversation.name;
   let displayPhoto = conversation.photo;
+  let otherUserId = null;
 
   if (conversation.type === "DM") {
     const otherMember = conversation.members.find(
@@ -313,13 +354,21 @@ const formatConversation = async (conversation, userId) => {
     if (otherMember && otherMember.user) {
       displayName = otherMember.user.name;
       displayPhoto = otherMember.user.profilePhoto || "";
+      otherUserId = otherMember.user._id?.toString() || null;
     }
   }
+
+  const visibleLastMessage = await getVisibleLastMessageForUser(
+    conversation._id,
+    userId
+  );
 
   return {
     ...conversation,
     displayName,
     displayPhoto,
+    otherUserId,
+    lastMessage: visibleLastMessage,
     unreadCount,
     myRole: member ? member.role : null,
     lastReadAt: member ? member.lastReadAt : null,
@@ -1023,7 +1072,7 @@ const sendMessage = async (
 
   assertActiveMember(conversation, user.id);
 
-  const { content, type = "TEXT", replyTo, mentions = [] } =
+  const { content, type = "TEXT", replyTo, mentions = [], forwardedFrom = null } =
     payload;
   const normalizedContent =
     typeof content === "string" ? content.trim() : "";
@@ -1058,6 +1107,7 @@ const sendMessage = async (
     content: normalizedContent,
     fileMeta: payload.fileMeta || undefined,
     replyTo: replyTo || null,
+    forwardedFrom: forwardedFrom || null,
     mentions: validMentions,
     readBy: [
       {
@@ -1254,15 +1304,27 @@ const deleteMessage = async (
     }
   }
 
+  const visibleLastMessage = await getVisibleLastMessageForUser(
+    message.conversation,
+    userId
+  );
+
   if (io) {
-    io.to(`conversation:${message.conversation}`).emit(
-      "message:deleted",
-      {
-        conversationId: message.conversation,
-        messageId: message._id,
-        scope,
-      }
-    );
+    const deletePayload = {
+      conversationId: message.conversation,
+      messageId: message._id,
+      scope,
+      lastMessage: visibleLastMessage,
+    };
+
+    if (scope === "all") {
+      io.to(`conversation:${message.conversation}`).emit(
+        "message:deleted",
+        deletePayload
+      );
+    } else {
+      io.to(`user:${userId}`).emit("message:deleted", deletePayload);
+    }
   }
 
   await incrementMetric("chat_message_deleted", {
@@ -1373,6 +1435,126 @@ const getUnreadCount = async (userId) => {
   };
 };
 
+const getUsersPresence = async (userIds = []) => {
+  const uniqueIds = normalizeUserIds(userIds);
+  const presence = {};
+
+  let inMemoryPresence = {};
+
+  try {
+    const { getOnlinePresenceMap } = require("./chat.socket");
+    inMemoryPresence = getOnlinePresenceMap();
+  } catch (_error) {
+    inMemoryPresence = {};
+  }
+
+  await Promise.all(
+    uniqueIds.map(async (id) => {
+      if (inMemoryPresence[id]) {
+        presence[id] = true;
+        return;
+      }
+
+      try {
+        const value = await redisClient.get(`presence:${id}`);
+        presence[id] = value === "online";
+      } catch (_error) {
+        presence[id] = false;
+      }
+    })
+  );
+
+  return presence;
+};
+
+const touchUserPresence = async (userId) => {
+  if (!userId) {
+    return;
+  }
+
+  try {
+    await redisClient.set(`presence:${userId}`, "online", {
+      EX: 45,
+    });
+  } catch (_error) {
+    // Ignore redis issues; chat presence can still rely on in-memory/socket events.
+  }
+};
+
+const forwardMessage = async (
+  messageId,
+  targetConversationIds,
+  user,
+  io
+) => {
+  const message = await Message.findById(messageId);
+
+  if (!message || message.isDeletedForAll) {
+    throw new Error("Message not found");
+  }
+
+  if (
+    message.deletedFor.some(
+      (id) => id.toString() === user.id.toString()
+    )
+  ) {
+    throw new Error("Message not found");
+  }
+
+  const sourceConversation = await Conversation.findById(
+    message.conversation
+  );
+
+  assertActiveMember(sourceConversation, user.id);
+
+  const uniqueTargets = normalizeUserIds(targetConversationIds);
+
+  if (!uniqueTargets.length) {
+    throw new Error("Select at least one conversation to forward to");
+  }
+
+  const forwardedMessages = [];
+
+  for (const targetConversationId of uniqueTargets) {
+    if (
+      targetConversationId.toString() ===
+      message.conversation.toString()
+    ) {
+      continue;
+    }
+
+    const targetConversation = await Conversation.findById(
+      targetConversationId
+    );
+
+    if (!targetConversation || targetConversation.isDeleted) {
+      throw new Error("Target conversation not found");
+    }
+
+    assertActiveMember(targetConversation, user.id);
+
+    const forwardedMessage = await sendMessage(
+      targetConversationId,
+      {
+        type: message.type,
+        content: message.content,
+        fileMeta: message.fileMeta || undefined,
+        forwardedFrom: message._id,
+      },
+      user,
+      io
+    );
+
+    forwardedMessages.push(forwardedMessage);
+  }
+
+  if (!forwardedMessages.length) {
+    throw new Error("Select a different conversation to forward to");
+  }
+
+  return forwardedMessages;
+};
+
 const getFileAbsolutePath = (fileName) => {
   const folder = isPrivateStorageEnabled
     ? "../../uploads-private/chat"
@@ -1451,6 +1633,9 @@ module.exports = {
   deleteMessage,
   markConversationAsRead,
   getUnreadCount,
+  getUsersPresence,
+  touchUserPresence,
+  forwardMessage,
   getChatFilePathForUser,
   setSocketIo,
   getSocketIo,

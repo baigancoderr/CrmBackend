@@ -75,6 +75,14 @@ const deleteMessageQuerySchema = Joi.object({
   scope: Joi.string().valid("me", "all").optional(),
 });
 
+const forwardMessageSchema = Joi.object({
+  targetConversationIds: Joi.array().items(objectId).min(1).max(10).required(),
+});
+
+const presenceQuerySchema = Joi.object({
+  userIds: Joi.string().trim().min(24).required(),
+});
+
 const socketConversationSchema = Joi.object({
   conversationId: objectId.required(),
 });
@@ -92,5 +100,7 @@ module.exports = {
   getMessagesQuerySchema,
   editMessageSchema,
   deleteMessageQuerySchema,
+  forwardMessageSchema,
+  presenceQuerySchema,
   socketConversationSchema,
 };

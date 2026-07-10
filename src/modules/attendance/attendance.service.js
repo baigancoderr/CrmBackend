@@ -230,6 +230,7 @@ const addPunchEvent = (attendance, event) => {
       time: eventTime,
       by: event.by || null,
       note: event.note || "",
+      changedAt: event.changedAt || new Date(),
     });
   }
 };
@@ -1580,6 +1581,8 @@ const getEmployeeAttendance =
         employee:
           user._id,
       })
+        .populate("punchEvents.by", "name employeeId role")
+        .populate("updatedBy", "name employeeId role")
         .sort({
           date: -1,
         })
