@@ -35,6 +35,8 @@ const isBiometricSyncEnabled =
 const defaultAllowedOrigins = [
   "https://newofficefrontend.fastsolution.cloud",
   "https://newofficebackend.fastsolution.cloud",
+  "https://manageteam.fastsolution.cloud",
+  "https://manageteam-api.fastsolution.cloud",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
   "http://localhost:6000",
