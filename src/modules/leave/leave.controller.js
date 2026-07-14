@@ -142,6 +142,7 @@ const allocateLeaves = async (req, res) => {
       await leaveService.allocateLeaveBalance(
         req.params.employeeId,
         req.body.allocatedLeaves,
+        req.body.extraLeaves,
         req.user
       );
 

@@ -35,6 +35,22 @@ const isWeekend = (date) => {
   return day === 0 || day === 6;
 };
 
+const assertWeekdayExtraWorkWindow = (dateValue) => {
+  const nowInBusinessTimezone = toBusinessDate(dateValue);
+
+  if (!isWeekend(nowInBusinessTimezone)) {
+    const requestStart = new Date(nowInBusinessTimezone);
+    requestStart.setHours(19, 0, 0, 0);
+
+    if (nowInBusinessTimezone < requestStart) {
+      throw createAppError(
+        "Extra work clock in/out is available after 7:00 PM on working days.",
+        422
+      );
+    }
+  }
+};
+
 const updateExpiredRequests = async (userId = null) => {
   const now = new Date();
 
@@ -143,20 +159,6 @@ const requestExtraWork = async (userId, reason) => {
   await updateExpiredRequests(userId);
 
   const now = new Date();
-  const nowInBusinessTimezone = toBusinessDate(now);
-
-  // Monday-Friday request only after 7 PM
-  if (!isWeekend(nowInBusinessTimezone)) {
-    const requestStart = new Date(nowInBusinessTimezone);
-    requestStart.setHours(19, 0, 0, 0);
-
-    if (nowInBusinessTimezone < requestStart) {
-      throw createAppError(
-        "Extra work request can only be submitted after 7:00 PM on working days.",
-        422
-      );
-    }
-  }
 
   const pendingRequest = await ExtraWork.findOne({
     employee: userId,
@@ -314,6 +316,7 @@ const extraClockIn = async (userId) => {
   await updateExpiredRequests(userId);
 
   const now = new Date();
+  assertWeekdayExtraWorkWindow(now);
 
   const permission = await ExtraWork.findOne({
     employee: userId,
@@ -365,6 +368,7 @@ const extraClockOut = async (userId) => {
   await updateExpiredRequests(userId);
 
   const now = new Date();
+  assertWeekdayExtraWorkWindow(now);
 
   const permission = await ExtraWork.findOne({
     employee: userId,

@@ -20,9 +20,6 @@ const getEligibleCreditMonths = (joiningDate, year) => {
     return year < currentYear ? 12 : 0;
   }
 
-  const currentMonth = now.getMonth() + 1;
-  let startMonth = 1;
-
   if (joiningDate) {
     const joining = new Date(joiningDate);
 
@@ -33,17 +30,13 @@ const getEligibleCreditMonths = (joiningDate, year) => {
         return 0;
       }
 
-      if (joiningYear === currentYear) {
-        startMonth = joining.getMonth() + 1;
+      if (joining > now) {
+        return 0;
       }
     }
   }
 
-  if (startMonth > currentMonth) {
-    return 0;
-  }
-
-  return currentMonth - startMonth + 1;
+  return now.getMonth() + 1;
 };
 
 const getAutoAllocatedLeaves = (joiningDate, year) => {
@@ -57,10 +50,12 @@ const getAccruedRemainingLeaves = ({
   usedLeaves,
   joiningDate,
   year,
+  extraLeaves = 0,
 }) => {
   const accruedLeaves = getAutoAllocatedLeaves(joiningDate, year);
   const spendableLeaves = Math.min(clampAnnualLeaves(allocatedLeaves), accruedLeaves);
-  return roundLeaveValue(Math.max(spendableLeaves - usedLeaves, 0));
+  const totalAvailable = roundLeaveValue(spendableLeaves + Math.max(extraLeaves, 0));
+  return roundLeaveValue(Math.max(totalAvailable - usedLeaves, 0));
 };
 
 const buildLeaveBalanceResponse = (balanceDoc, joiningDate) => {
@@ -99,6 +94,7 @@ const upsertMonthlyLeaveBalance = async ({
       usedLeaves: 0,
       joiningDate,
       year,
+      extraLeaves: 0,
     });
 
     balance = await LeaveBalance.create({
@@ -121,6 +117,7 @@ const upsertMonthlyLeaveBalance = async ({
     usedLeaves: balance.usedLeaves,
     joiningDate,
     year,
+    extraLeaves: balance.extraLeaves || 0,
   });
   const shouldUpdate =
     balance.allocatedLeaves !== targetAllocatedLeaves ||
@@ -684,7 +681,7 @@ const rejectLeave = async (id,reason,approver) => {
     );
 };
 
-const allocateLeaveBalance = async (employeeId,allocatedLeaves,admin) => {
+const allocateLeaveBalance = async (employeeId,allocatedLeaves,extraLeaves,admin) => {
   if (!canApproveLeave(admin.role)) {
     throw new Error(
       "You are not authorized to allocate leave."
@@ -707,6 +704,15 @@ const allocateLeaveBalance = async (employeeId,allocatedLeaves,admin) => {
     annualAllocation = parsedAllocatedLeaves;
   }
 
+  let extraLeavesToAdd;
+  if (typeof extraLeaves !== "undefined") {
+    const parsedExtraLeaves = Number(extraLeaves);
+    if (Number.isNaN(parsedExtraLeaves) || parsedExtraLeaves < 0) {
+      throw new Error("Invalid extra leave.");
+    }
+    extraLeavesToAdd = parsedExtraLeaves;
+  }
+
   const year = new Date().getFullYear();
   const balance = await upsertMonthlyLeaveBalance({
     employeeId,
@@ -715,6 +721,21 @@ const allocateLeaveBalance = async (employeeId,allocatedLeaves,admin) => {
     adminId: admin._id,
     annualAllocation,
   });
+
+  if (typeof extraLeavesToAdd === "number" && extraLeavesToAdd > 0) {
+    balance.extraLeaves = roundLeaveValue(
+      roundLeaveValue(balance.extraLeaves || 0) + extraLeavesToAdd
+    );
+    balance.remainingLeaves = getAccruedRemainingLeaves({
+      allocatedLeaves: balance.allocatedLeaves,
+      usedLeaves: balance.usedLeaves,
+      joiningDate: employee.joiningDate,
+      year,
+      extraLeaves: balance.extraLeaves,
+    });
+    balance.lastUpdatedBy = admin._id;
+    await balance.save();
+  }
 
   const populatedBalance = await LeaveBalance.findById(
     balance._id
