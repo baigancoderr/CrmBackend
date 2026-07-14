@@ -83,6 +83,7 @@ const createUser = async (currentUser, body) => {
         officeLocation,
         shift,
         isActive,
+        birthday,
     } = body;
 
     const actorRole = await resolveActorRole(currentUser);
@@ -187,6 +188,7 @@ const createUser = async (currentUser, body) => {
         profilePhoto,
         department: department || "",
         designation: designation || "",
+        birthday: birthday ? new Date(birthday) : null,
         joiningDate,
         manager: manager || null,
         teamLeader,
@@ -250,7 +252,7 @@ const getProfile = async (userId) => {
 };
 
 const updateProfile = async (userId,body) => {
-    const {name,phone,gender,profilePhoto,addressInfo,socialLinks,} = body;
+    const {name,phone,gender,profilePhoto,addressInfo,socialLinks,birthday,} = body;
 
     const user =await User.findById(userId);
 
@@ -270,6 +272,10 @@ const updateProfile = async (userId,body) => {
 
     if (gender !== undefined) {
         user.gender = gender;
+    }
+
+    if (birthday !== undefined) {
+        user.birthday = birthday ? new Date(birthday) : null;
     }
 
   if (profilePhoto !== undefined) {
@@ -387,7 +393,7 @@ const getVisibleTeamMembers = async (currentUser) => {
         _id: { $ne: currentUser.id },
     })
         .select(
-            "_id employeeId name firstName lastName role designation department profilePhoto phone email shift joiningDate officeLocation isActive manager teamLeader"
+            "_id employeeId name firstName lastName role designation department profilePhoto phone email shift joiningDate officeLocation isActive manager teamLeader birthday"
         )
         .sort({ name: 1 })
         .lean();
@@ -418,12 +424,65 @@ const getVisibleTeamMembers = async (currentUser) => {
             shift: user.shift || "",
             officeLocation: user.officeLocation || "",
             joiningDate: user.joiningDate || null,
-            birthday: null,
+            birthday: user.birthday || null,
             isActive: Boolean(user.isActive),
             isSameDepartment: Boolean(sameDepartment),
             isSameReportingLine: Boolean(sameReportingLine),
         };
     });
+};
+
+const getUpcomingBirthdays = async (days = 30, limit = 5) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const users = await User.find({
+        isActive: true,
+        birthday: { $ne: null },
+    })
+        .select("_id name designation department profilePhoto birthday")
+        .sort({ name: 1 })
+        .lean();
+
+    const upcoming = users
+        .map((user) => {
+            const birthday = user.birthday ? new Date(user.birthday) : null;
+            if (!birthday || Number.isNaN(birthday.getTime())) {
+                return null;
+            }
+
+            const nextBirthday = new Date(
+                today.getFullYear(),
+                birthday.getMonth(),
+                birthday.getDate()
+            );
+
+            if (nextBirthday < today) {
+                nextBirthday.setFullYear(today.getFullYear() + 1);
+            }
+
+            const diffMs = nextBirthday.getTime() - today.getTime();
+            const diffDays = Math.round(diffMs / (24 * 60 * 60 * 1000));
+
+            return {
+                _id: user._id,
+                name: user.name || "",
+                designation: user.designation || "",
+                department: user.department || "",
+                profilePhoto: user.profilePhoto || "",
+                birthday: birthday.toISOString(),
+                nextBirthday: nextBirthday.toISOString(),
+                daysUntil: diffDays,
+            };
+        })
+        .filter((record) => record && record.daysUntil <= days)
+        .sort((left, right) => left.daysUntil - right.daysUntil)
+        .slice(0, limit);
+
+    return {
+        success: true,
+        data: upcoming,
+    };
 };
 
 const getUserById = async (userId) => {
@@ -597,6 +656,10 @@ const updateUserById = async (currentUser, userId, body) => {
 
     if (body.designation !== undefined) {
         user.designation = String(body.designation).trim();
+    }
+
+    if (body.birthday !== undefined) {
+        user.birthday = body.birthday ? new Date(body.birthday) : null;
     }
 
     if (body.joiningDate !== undefined) {
@@ -795,6 +858,7 @@ module.exports = {
     updateProfilePhoto,
     getAllUsers,
     getVisibleTeamMembers,
+    getUpcomingBirthdays,
     getUserById,
     updateUserStatus,
     updateUserById,

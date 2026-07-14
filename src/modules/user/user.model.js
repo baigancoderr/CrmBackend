@@ -157,6 +157,10 @@ const userSchema = new mongoose.Schema(
             default: "",
         },
 
+        birthday: {
+            type: Date,
+        },
+
         joiningDate: {
             type: Date,
         },
