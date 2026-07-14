@@ -2,7 +2,7 @@ const fs = require("fs/promises");
 const { exec } = require("child_process");
 const { promisify } = require("util");
 const {
-  fileTypeFromFile,
+  fromFile: fileTypeFromFile,
 } = require("file-type");
 const {
   CHAT_ALLOWED_EXTENSIONS,

@@ -14,6 +14,10 @@ const chatFileSecurity = async (req, res, next) => {
       return next();
     }
 
+    if (process.env.CHAT_DISABLE_FILE_SECURITY === "true") {
+      return next();
+    }
+
     await validateFileSignature(
       req.file.path,
       req.file.mimetype,
@@ -37,9 +41,16 @@ const chatFileSecurity = async (req, res, next) => {
       reason: error.message,
     });
 
+    const isProduction =
+      process.env.NODE_ENV === "production";
+    const fallbackMessage =
+      "Invalid or unsafe file upload";
+
     return res.status(400).json({
       success: false,
-      message: "Invalid or unsafe file upload",
+      message: isProduction
+        ? fallbackMessage
+        : error.message || fallbackMessage,
     });
   }
 };
