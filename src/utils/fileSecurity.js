@@ -4,50 +4,71 @@ const { promisify } = require("util");
 const {
   fileTypeFromFile,
 } = require("file-type");
+const {
+  CHAT_ALLOWED_EXTENSIONS,
+  CHAT_ALLOWED_DETECTED_MIME_TYPES,
+  CHAT_OFFICE_EXTENSIONS,
+  CHAT_TEXT_EXTENSIONS,
+  getFileExtension,
+} = require("../constants/chatAttachments");
 
 const execAsync = promisify(exec);
 
-const SIGNATURE_MIME_MAP = {
-  "image/jpeg": ["image/jpeg"],
-  "image/png": ["image/png"],
-  "image/webp": ["image/webp"],
-  "application/pdf": ["application/pdf"],
-  "application/zip": [
-    "application/zip",
-    "application/x-zip-compressed",
-  ],
-  "application/x-zip-compressed": [
-    "application/zip",
-    "application/x-zip-compressed",
-  ],
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-    ["application/zip", "application/x-zip-compressed"],
-};
+const OFFICE_DETECTED_MIME_TYPES = new Set([
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/x-cfb",
+  "application/zip",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+]);
 
-const isExpectedSignature = (uploadMimeType, detectedMime) => {
-  const allowedSignatures = SIGNATURE_MIME_MAP[uploadMimeType];
-
-  if (!allowedSignatures) {
+const isAllowedOfficeFile = (extension, detectedMime) => {
+  if (!CHAT_OFFICE_EXTENSIONS.has(extension)) {
     return false;
   }
 
-  return allowedSignatures.includes(detectedMime);
+  if (!detectedMime) {
+    return true;
+  }
+
+  return OFFICE_DETECTED_MIME_TYPES.has(detectedMime);
 };
 
-const validateFileSignature = async (filePath, uploadMimeType) => {
-  const detected = await fileTypeFromFile(filePath);
+const validateFileSignature = async (filePath, uploadMimeType, originalName = "") => {
+  const extension = getFileExtension(originalName);
+  const normalizedMime = (uploadMimeType || "").toLowerCase().trim();
 
-  if (!detected?.mime) {
+  if (CHAT_TEXT_EXTENSIONS.has(extension)) {
+    return;
+  }
+
+  if (
+    normalizedMime.startsWith("text/") &&
+    CHAT_ALLOWED_EXTENSIONS.has(extension)
+  ) {
+    return;
+  }
+
+  const detected = await fileTypeFromFile(filePath);
+  const detectedMime = detected?.mime || "";
+
+  if (!detectedMime) {
+    if (CHAT_ALLOWED_EXTENSIONS.has(extension)) {
+      return;
+    }
+
     throw new Error("Unable to detect file signature");
   }
 
-  const isValid = isExpectedSignature(
-    uploadMimeType,
-    detected.mime
-  );
+  if (isAllowedOfficeFile(extension, detectedMime)) {
+    return;
+  }
 
-  if (!isValid) {
-    throw new Error("File signature does not match mime type");
+  if (!CHAT_ALLOWED_DETECTED_MIME_TYPES.has(detectedMime)) {
+    throw new Error("File type not allowed");
   }
 };
 

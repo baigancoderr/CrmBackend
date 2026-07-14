@@ -19,6 +19,9 @@ const GROUP_MANAGER_ROLES = [
 const USER_POPULATE_FIELDS =
   "name employeeId role designation department profilePhoto";
 
+const DRAWER_USER_FIELDS =
+  "name employeeId role designation department profilePhoto email phone";
+
 const isPrivateStorageEnabled =
   process.env.CHAT_UPLOAD_PRIVATE_STORAGE === "true";
 
@@ -191,7 +194,7 @@ const getUnreadCountForConversation = async (
   });
 };
 
-const buildMessagePreviewFromType = (type, content) => {
+const buildMessagePreviewFromType = (type, content, fileMeta) => {
   const normalizedContent =
     typeof content === "string" ? content.trim() : "";
 
@@ -200,7 +203,10 @@ const buildMessagePreviewFromType = (type, content) => {
   }
 
   if (type === "FILE") {
-    return "📎 File";
+    const fileName =
+      typeof fileMeta?.name === "string" ? fileMeta.name.trim() : "";
+
+    return fileName ? `📎 ${fileName}` : "📎 File";
   }
 
   return normalizedContent;
@@ -216,7 +222,7 @@ const getVisibleLastMessageForUser = async (
     deletedFor: { $ne: userId },
   })
     .sort({ createdAt: -1 })
-    .select("type content sender createdAt")
+    .select("type content fileMeta sender createdAt")
     .lean();
 
   if (!latestMessage) {
@@ -230,7 +236,8 @@ const getVisibleLastMessageForUser = async (
   return {
     text: buildMessagePreviewFromType(
       latestMessage.type,
-      latestMessage.content
+      latestMessage.content,
+      latestMessage.fileMeta
     ),
     sender: latestMessage.sender || null,
     sentAt: latestMessage.createdAt,
@@ -245,7 +252,7 @@ const refreshConversationLastMessage = async (
     isDeletedForAll: false,
   })
     .sort({ createdAt: -1 })
-    .select("type content sender createdAt")
+    .select("type content fileMeta sender createdAt")
     .lean();
 
   if (!latestMessage) {
@@ -264,7 +271,8 @@ const refreshConversationLastMessage = async (
     lastMessage: {
       text: buildMessagePreviewFromType(
         latestMessage.type,
-        latestMessage.content
+        latestMessage.content,
+        latestMessage.fileMeta
       ),
       sender: latestMessage.sender || null,
       sentAt: latestMessage.createdAt,
@@ -1119,7 +1127,8 @@ const sendMessage = async (
 
   const previewText = buildMessagePreviewFromType(
     type,
-    normalizedContent
+    normalizedContent,
+    payload.fileMeta
   );
 
   await Conversation.findByIdAndUpdate(conversationId, {
@@ -1606,6 +1615,160 @@ const getChatFilePathForUser = async (fileName, userId) => {
   return absolutePath;
 };
 
+const assertCanViewConversation = async (
+  conversationId,
+  userId,
+  userRole = ""
+) => {
+  const conversation = await Conversation.findById(conversationId);
+
+  if (!conversation || conversation.isDeleted) {
+    throw new Error("Conversation not found");
+  }
+
+  if (
+    !(
+      isGroupManagerRole(userRole) &&
+      conversation.type === "GROUP"
+    )
+  ) {
+    assertActiveMember(conversation, userId);
+  }
+
+  return conversation;
+};
+
+const getConversationDrawerInfo = async (
+  conversationId,
+  userId,
+  userRole = ""
+) => {
+  await assertCanViewConversation(conversationId, userId, userRole);
+
+  const conversation = await populateConversation(
+    Conversation.findById(conversationId)
+  );
+
+  if (!conversation) {
+    throw new Error("Conversation not found");
+  }
+
+  const conversationObject = conversation.toObject();
+
+  if (conversationObject.type === "DM") {
+    const otherMember = conversationObject.members.find((entry) => {
+      const memberUserId = entry.user?._id?.toString();
+
+      return memberUserId && memberUserId !== userId.toString() && !entry.leftAt;
+    });
+
+    if (!otherMember?.user?._id) {
+      throw new Error("Contact not found");
+    }
+
+    const profile = await User.findById(otherMember.user._id)
+      .select(DRAWER_USER_FIELDS)
+      .lean();
+
+    if (!profile) {
+      throw new Error("Contact not found");
+    }
+
+    return {
+      type: "DM",
+      profile,
+      otherUserId: profile._id?.toString() || null,
+    };
+  }
+
+  const activeMemberUsers = conversationObject.members
+    .filter((member) => !member.leftAt && member.user?._id)
+    .map((member) => member.user);
+
+  const memberIds = activeMemberUsers.map((user) => user._id);
+  const usersWithContact = await User.find({
+    _id: { $in: memberIds },
+  })
+    .select(DRAWER_USER_FIELDS)
+    .lean();
+
+  const userMap = new Map(
+    usersWithContact.map((user) => [user._id.toString(), user])
+  );
+
+  const members = conversationObject.members
+    .filter((member) => !member.leftAt && member.user?._id)
+    .map((member) => {
+      const memberUser = userMap.get(member.user._id.toString()) || member.user;
+
+      return {
+        _id: memberUser._id,
+        name: memberUser.name,
+        employeeId: memberUser.employeeId,
+        role: memberUser.role,
+        designation: memberUser.designation,
+        department: memberUser.department,
+        profilePhoto: memberUser.profilePhoto,
+        email: memberUser.email,
+        phone: memberUser.phone,
+        chatRole: member.role,
+      };
+    });
+
+  return {
+    type: "GROUP",
+    name: conversationObject.name || "",
+    description: conversationObject.description || "",
+    photo: conversationObject.photo || "",
+    memberCount: members.length,
+    members,
+  };
+};
+
+const getConversationAttachments = async (
+  conversationId,
+  userId,
+  userRole = "",
+  query = {}
+) => {
+  await assertCanViewConversation(conversationId, userId, userRole);
+
+  const attachmentType =
+    query.type === "documents" ? "documents" : "media";
+  const page = Math.max(1, Number(query.page) || 1);
+  const limit = Math.min(50, Math.max(1, Number(query.limit) || 24));
+  const skip = (page - 1) * limit;
+
+  const filter = {
+    conversation: conversationId,
+    isDeletedForAll: false,
+    deletedFor: { $ne: userId },
+    type: attachmentType === "media" ? "IMAGE" : "FILE",
+  };
+
+  const [data, totalRecords] = await Promise.all([
+    Message.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select("type content fileMeta createdAt sender")
+      .populate("sender", USER_POPULATE_FIELDS)
+      .lean(),
+    Message.countDocuments(filter),
+  ]);
+
+  const totalPages = Math.max(1, Math.ceil(totalRecords / limit) || 1);
+
+  return {
+    type: attachmentType,
+    page,
+    limit,
+    totalRecords,
+    totalPages,
+    data,
+  };
+};
+
 let socketIo = null;
 
 const setSocketIo = (io) => {
@@ -1637,6 +1800,8 @@ module.exports = {
   touchUserPresence,
   forwardMessage,
   getChatFilePathForUser,
+  getConversationDrawerInfo,
+  getConversationAttachments,
   setSocketIo,
   getSocketIo,
 };

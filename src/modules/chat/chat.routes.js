@@ -27,6 +27,7 @@ const {
   deleteMessageQuerySchema,
   forwardMessageSchema,
   presenceQuerySchema,
+  conversationAttachmentsQuerySchema,
 } = require("./chat.validation");
 
 router.use(auth, observeChatHttp);
@@ -125,6 +126,23 @@ router.get(
     query: getMessagesQuerySchema,
   }),
   chatController.getMessages
+);
+
+router.get(
+  "/conversations/:id/drawer-info",
+  validateRequest({
+    params: conversationIdParamSchema,
+  }),
+  chatController.getConversationDrawerInfo
+);
+
+router.get(
+  "/conversations/:id/attachments",
+  validateRequest({
+    params: conversationIdParamSchema,
+    query: conversationAttachmentsQuerySchema,
+  }),
+  chatController.getConversationAttachments
 );
 
 router.post(

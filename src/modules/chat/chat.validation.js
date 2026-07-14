@@ -87,6 +87,12 @@ const socketConversationSchema = Joi.object({
   conversationId: objectId.required(),
 });
 
+const conversationAttachmentsQuerySchema = Joi.object({
+  type: Joi.string().valid("media", "documents").default("media"),
+  page: Joi.number().integer().min(1).optional(),
+  limit: Joi.number().integer().min(1).max(50).optional(),
+});
+
 module.exports = {
   paginationQuerySchema,
   createConversationSchema,
@@ -103,4 +109,5 @@ module.exports = {
   forwardMessageSchema,
   presenceQuerySchema,
   socketConversationSchema,
+  conversationAttachmentsQuerySchema,
 };

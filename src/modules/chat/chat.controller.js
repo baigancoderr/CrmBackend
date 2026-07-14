@@ -422,6 +422,47 @@ const forwardMessage = async (req, res) => {
   }
 };
 
+const getConversationDrawerInfo = async (req, res) => {
+  try {
+    const data = await chatService.getConversationDrawerInfo(
+      req.params.id,
+      req.user.id,
+      req.user.role
+    );
+
+    return res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const getConversationAttachments = async (req, res) => {
+  try {
+    const data = await chatService.getConversationAttachments(
+      req.params.id,
+      req.user.id,
+      req.user.role,
+      req.query
+    );
+
+    return res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 module.exports = {
   createConversation,
   getMyConversations,
@@ -442,4 +483,6 @@ module.exports = {
   getChatFile,
   getUsersPresence,
   forwardMessage,
+  getConversationDrawerInfo,
+  getConversationAttachments,
 };

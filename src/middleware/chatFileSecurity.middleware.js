@@ -16,7 +16,8 @@ const chatFileSecurity = async (req, res, next) => {
 
     await validateFileSignature(
       req.file.path,
-      req.file.mimetype
+      req.file.mimetype,
+      req.file.originalname
     );
     await runVirusScanIfEnabled(req.file.path);
 
