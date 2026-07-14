@@ -5,6 +5,136 @@ const User = require("../user/user.model");
 const {calculateLeaveDays,hasPendingLeave,getMentionUsers,canApproveLeave,} = require("./leave.helper");
 
 const LEAVE_ADMIN_ROLES = ["SUPER_ADMIN", "HR"];
+const ANNUAL_LEAVE_LIMIT = 15;
+const MONTHLY_LEAVE_CREDIT = 1.25;
+
+const roundLeaveValue = (value = 0) => Number(value.toFixed(2));
+const clampAnnualLeaves = (value = ANNUAL_LEAVE_LIMIT) =>
+  Math.min(Math.max(roundLeaveValue(value), 0), ANNUAL_LEAVE_LIMIT);
+
+const getEligibleCreditMonths = (joiningDate, year) => {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+
+  if (year !== currentYear) {
+    return year < currentYear ? 12 : 0;
+  }
+
+  if (joiningDate) {
+    const joining = new Date(joiningDate);
+
+    if (!Number.isNaN(joining.getTime())) {
+      const joiningYear = joining.getFullYear();
+
+      if (joiningYear > currentYear) {
+        return 0;
+      }
+
+      if (joining > now) {
+        return 0;
+      }
+    }
+  }
+
+  return now.getMonth() + 1;
+};
+
+const getAutoAllocatedLeaves = (joiningDate, year) => {
+  const eligibleMonths = getEligibleCreditMonths(joiningDate, year);
+  const creditedLeaves = roundLeaveValue(eligibleMonths * MONTHLY_LEAVE_CREDIT);
+  return Math.min(creditedLeaves, ANNUAL_LEAVE_LIMIT);
+};
+
+const getAccruedRemainingLeaves = ({
+  allocatedLeaves,
+  usedLeaves,
+  joiningDate,
+  year,
+  extraLeaves = 0,
+}) => {
+  const accruedLeaves = getAutoAllocatedLeaves(joiningDate, year);
+  const spendableLeaves = Math.min(clampAnnualLeaves(allocatedLeaves), accruedLeaves);
+  const totalAvailable = roundLeaveValue(spendableLeaves + Math.max(extraLeaves, 0));
+  return roundLeaveValue(Math.max(totalAvailable - usedLeaves, 0));
+};
+
+const buildLeaveBalanceResponse = (balanceDoc, joiningDate) => {
+  const balanceObject =
+    typeof balanceDoc?.toObject === "function" ? balanceDoc.toObject() : balanceDoc;
+  const accruedLeaves = getAutoAllocatedLeaves(joiningDate, balanceObject.year);
+
+  return {
+    ...balanceObject,
+    accruedLeaves,
+    monthlyCredit: MONTHLY_LEAVE_CREDIT,
+    annualLimit: ANNUAL_LEAVE_LIMIT,
+  };
+};
+
+const upsertMonthlyLeaveBalance = async ({
+  employeeId,
+  year,
+  joiningDate,
+  adminId = null,
+  annualAllocation,
+}) => {
+  let balance = await LeaveBalance.findOne({
+    employeeId,
+    year,
+    isDeleted: false,
+    isActive: true,
+  });
+
+  if (!balance) {
+    const allocatedLeaves = clampAnnualLeaves(
+      typeof annualAllocation === "number" ? annualAllocation : ANNUAL_LEAVE_LIMIT
+    );
+    const remainingLeaves = getAccruedRemainingLeaves({
+      allocatedLeaves,
+      usedLeaves: 0,
+      joiningDate,
+      year,
+      extraLeaves: 0,
+    });
+
+    balance = await LeaveBalance.create({
+      employeeId,
+      allocatedLeaves,
+      usedLeaves: 0,
+      remainingLeaves,
+      year,
+      lastUpdatedBy: adminId,
+    });
+
+    return balance;
+  }
+
+  const targetAllocatedLeaves = clampAnnualLeaves(
+    typeof annualAllocation === "number" ? annualAllocation : balance.allocatedLeaves
+  );
+  const nextRemainingLeaves = getAccruedRemainingLeaves({
+    allocatedLeaves: targetAllocatedLeaves,
+    usedLeaves: balance.usedLeaves,
+    joiningDate,
+    year,
+    extraLeaves: balance.extraLeaves || 0,
+  });
+  const shouldUpdate =
+    balance.allocatedLeaves !== targetAllocatedLeaves ||
+    balance.remainingLeaves !== nextRemainingLeaves ||
+    (adminId && String(balance.lastUpdatedBy || "") !== String(adminId));
+
+  if (shouldUpdate) {
+    balance.allocatedLeaves = targetAllocatedLeaves;
+    balance.remainingLeaves = nextRemainingLeaves;
+    if (adminId) {
+      balance.lastUpdatedBy = adminId;
+    }
+    await balance.save();
+  }
+
+  return balance;
+};
 
 const createLeave = async (body,employeeId) => {
   const {fromDate,toDate,category = "FULL_DAY",reason,attachment = "",mentions = [],
@@ -115,12 +245,16 @@ const createLeave = async (body,employeeId) => {
     }
   }
 
-  const balance =await LeaveBalance.findOne({
-      employeeId,
-      year:new Date().getFullYear(),
-      isDeleted: false,
-      isActive: true,
-    });
+  const employee = await User.findById(employeeId).select("joiningDate");
+  if (!employee) {
+    throw new Error("Employee not found.");
+  }
+
+  const balance = await upsertMonthlyLeaveBalance({
+    employeeId,
+    year: new Date().getFullYear(),
+    joiningDate: employee.joiningDate,
+  });
 
   if (!balance) {
     throw new Error(
@@ -410,18 +544,17 @@ const approveLeave = async (id,approver) => {
     );
   }
 
-  const balance = await LeaveBalance.findOne({
-      employeeId: leave.employeeId,
-      year: new Date().getFullYear(),
-      isDeleted: false,
-      isActive: true,
-    });
-
-  if (!balance) {
-    throw new Error(
-      "Leave balance not found."
-    );
+  const employee = await User.findById(leave.employeeId).select("joiningDate");
+  if (!employee) {
+    throw new Error("Employee not found.");
   }
+
+  const balance = await upsertMonthlyLeaveBalance({
+    employeeId: leave.employeeId,
+    year: new Date().getFullYear(),
+    joiningDate: employee.joiningDate,
+    adminId: approver._id,
+  });
 
   // Leave Balance Validation
   if (leave.leaveDeductionType ==="LEAVE_BALANCE" &&balance.remainingLeaves <leave.leaveBalanceDays) {
@@ -548,50 +681,63 @@ const rejectLeave = async (id,reason,approver) => {
     );
 };
 
-const allocateLeaveBalance = async (employeeId,allocatedLeaves,admin) => {
+const allocateLeaveBalance = async (employeeId,allocatedLeaves,extraLeaves,admin) => {
   if (!canApproveLeave(admin.role)) {
     throw new Error(
       "You are not authorized to allocate leave."
     );
   }
 
-  allocatedLeaves = Number(allocatedLeaves);
-
-  if (isNaN(allocatedLeaves) || allocatedLeaves < 0
-  ) {
+  const employee = await User.findById(employeeId).select("joiningDate");
+  if (!employee) {
     throw new Error(
-      "Invalid allocated leave."
+      "Employee not found."
     );
   }
 
-  let balance = await LeaveBalance.findOne({
-      employeeId,
-      year: new Date().getFullYear(),
-      isDeleted: false,
-    });
-
-  if (!balance) {
-    balance =
-      await LeaveBalance.create({
-        employeeId,
-        allocatedLeaves,
-        usedLeaves: 0,
-        remainingLeaves:allocatedLeaves,
-        year:new Date().getFullYear(),
-
-        lastUpdatedBy:admin._id,
-      });
-
-    return balance;
+  let annualAllocation;
+  if (typeof allocatedLeaves !== "undefined") {
+    const parsedAllocatedLeaves = Number(allocatedLeaves);
+    if (Number.isNaN(parsedAllocatedLeaves) || parsedAllocatedLeaves < 0) {
+      throw new Error("Invalid allocated leave.");
+    }
+    annualAllocation = parsedAllocatedLeaves;
   }
 
-  balance.allocatedLeaves = allocatedLeaves;
+  let extraLeavesToAdd;
+  if (typeof extraLeaves !== "undefined") {
+    const parsedExtraLeaves = Number(extraLeaves);
+    if (Number.isNaN(parsedExtraLeaves) || parsedExtraLeaves < 0) {
+      throw new Error("Invalid extra leave.");
+    }
+    extraLeavesToAdd = parsedExtraLeaves;
+  }
 
-  balance.remainingLeaves = Math.max(allocatedLeaves -balance.usedLeaves,0);
-  balance.lastUpdatedBy =admin._id;
-  await balance.save();
+  const year = new Date().getFullYear();
+  const balance = await upsertMonthlyLeaveBalance({
+    employeeId,
+    year,
+    joiningDate: employee.joiningDate,
+    adminId: admin._id,
+    annualAllocation,
+  });
 
-  return await LeaveBalance.findById(
+  if (typeof extraLeavesToAdd === "number" && extraLeavesToAdd > 0) {
+    balance.extraLeaves = roundLeaveValue(
+      roundLeaveValue(balance.extraLeaves || 0) + extraLeavesToAdd
+    );
+    balance.remainingLeaves = getAccruedRemainingLeaves({
+      allocatedLeaves: balance.allocatedLeaves,
+      usedLeaves: balance.usedLeaves,
+      joiningDate: employee.joiningDate,
+      year,
+      extraLeaves: balance.extraLeaves,
+    });
+    balance.lastUpdatedBy = admin._id;
+    await balance.save();
+  }
+
+  const populatedBalance = await LeaveBalance.findById(
     balance._id
   )
     .populate(
@@ -609,6 +755,8 @@ const allocateLeaveBalance = async (employeeId,allocatedLeaves,admin) => {
       "history.approvedBy",
       "name employeeId role"
     );
+
+  return buildLeaveBalanceResponse(populatedBalance, employee.joiningDate);
 };
 
 
@@ -631,26 +779,20 @@ const getLeaveBalance = async (
     );
   }
 
-  let balance = await LeaveBalance.findOne({
-      employeeId,
-      year: new Date().getFullYear(),
-      isDeleted: false,
-      isActive: true,
-    });
-
-  // If HR has not allocated leaves yet, expose a default zero balance
-  // instead of throwing an error so employee screens can still render.
-  if (!balance) {
-    balance = await LeaveBalance.create({
-      employeeId,
-      allocatedLeaves: 0,
-      usedLeaves: 0,
-      remainingLeaves: 0,
-      year: new Date().getFullYear(),
-    });
+  const employee = await User.findById(employeeId).select("joiningDate");
+  if (!employee) {
+    throw new Error("Employee not found.");
   }
 
-  return await LeaveBalance.findById(balance._id)
+  const year = new Date().getFullYear();
+  const balance = await upsertMonthlyLeaveBalance({
+    employeeId,
+    year,
+    joiningDate: employee.joiningDate,
+    adminId: isAdmin ? currentUser.id : null,
+  });
+
+  const populatedBalance = await LeaveBalance.findById(balance._id)
       .populate(
         "history.leaveId"
       )
@@ -662,6 +804,8 @@ const getLeaveBalance = async (
         "lastUpdatedBy",
         "name employeeId role"
       );
+
+  return buildLeaveBalanceResponse(populatedBalance, employee.joiningDate);
 };
 
 const completeLeave = async () => {

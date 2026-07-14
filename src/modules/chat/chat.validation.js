@@ -75,8 +75,22 @@ const deleteMessageQuerySchema = Joi.object({
   scope: Joi.string().valid("me", "all").optional(),
 });
 
+const forwardMessageSchema = Joi.object({
+  targetConversationIds: Joi.array().items(objectId).min(1).max(10).required(),
+});
+
+const presenceQuerySchema = Joi.object({
+  userIds: Joi.string().trim().min(24).required(),
+});
+
 const socketConversationSchema = Joi.object({
   conversationId: objectId.required(),
+});
+
+const conversationAttachmentsQuerySchema = Joi.object({
+  type: Joi.string().valid("media", "documents").default("media"),
+  page: Joi.number().integer().min(1).optional(),
+  limit: Joi.number().integer().min(1).max(50).optional(),
 });
 
 module.exports = {
@@ -92,5 +106,8 @@ module.exports = {
   getMessagesQuerySchema,
   editMessageSchema,
   deleteMessageQuerySchema,
+  forwardMessageSchema,
+  presenceQuerySchema,
   socketConversationSchema,
+  conversationAttachmentsQuerySchema,
 };

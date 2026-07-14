@@ -41,6 +41,12 @@ router.get(
 );
 
 router.get(
+  "/birthdays",
+  authMiddleware,
+  userController.getUpcomingBirthdays
+);
+
+router.get(
   "/dashboard-counts",
   authMiddleware,
   roleMiddleware(...ADMIN_ROLES),

@@ -7,45 +7,26 @@ const {
 const {
   fetchBiometricInOutRecords,
   fetchBiometricInOutForUser,
+  fetchBiometricInOutForRange,
 } = require("../biometric/biometricInOut.service");
+const {
+  getTodayDateKey,
+  getDateKeyFromDate,
+  parseIstTimeOnDate,
+  parseBiometricPunchDateString,
+  formatIstTimePart,
+  isIstWeekendNow,
+  isIstWeekendDateKey,
+  getIstDayBounds,
+  getIstWeekdayShort,
+} = require("../../utils/istDateTime");
 
-const getTodayDate = () => {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-  }).format(new Date());
-};
+const getTodayDate = () => getTodayDateKey();
 
-const parseBiometricPunchDate = (punchDateString) => {
-  if (!punchDateString) {
-    return null;
-  }
+const parseBiometricPunchDate = (punchDateString) =>
+  parseBiometricPunchDateString(punchDateString);
 
-  const [datePart, timePart] = punchDateString.trim().split(" ");
-
-  if (!datePart || !timePart) {
-    return null;
-  }
-
-  const [day, month, year] = datePart.split("/");
-  const [hours, minutes, seconds] = timePart.split(":");
-
-  return new Date(
-    Number(year),
-    Number(month) - 1,
-    Number(day),
-    Number(hours),
-    Number(minutes),
-    Number(seconds || 0)
-  );
-};
-
-const getDateKey = (dateValue) => {
-  const year = dateValue.getFullYear();
-  const month = String(dateValue.getMonth() + 1).padStart(2, "0");
-  const day = String(dateValue.getDate()).padStart(2, "0");
-
-  return `${year}-${month}-${day}`;
-};
+const getDateKey = (dateValue) => getDateKeyFromDate(dateValue);
 
 const getAttendanceEmployeeSnapshot = (user) => ({
   employeeId: user?.employeeId || "",
@@ -125,14 +106,15 @@ const getOfficeTimes = (user, dateKey) => {
     user?.officeTiming?.halfDayCutoff ||
     ATTENDANCE_RULES.HALF_DAY_CHECKOUT_TIME;
 
-  const officeStart = new Date(`${dateKey}T${startTime}:00`);
-  const officeEnd = new Date(`${dateKey}T${endTime}:00`);
+  const officeStart = parseIstTimeOnDate(dateKey, `${startTime}:00`);
+  const officeEnd = parseIstTimeOnDate(dateKey, `${endTime}:00`);
   const lateGraceEnd = new Date(
     officeStart.getTime() +
       ATTENDANCE_RULES.LATE_GRACE_MINUTES * 60000
   );
-  const halfDayCutoffTime = new Date(
-    `${dateKey}T${halfDayCutoff}:00`
+  const halfDayCutoffTime = parseIstTimeOnDate(
+    dateKey,
+    `${halfDayCutoff}:00`
   );
 
   return {
@@ -230,6 +212,7 @@ const addPunchEvent = (attendance, event) => {
       time: eventTime,
       by: event.by || null,
       note: event.note || "",
+      changedAt: event.changedAt || new Date(),
     });
   }
 };
@@ -282,6 +265,11 @@ const applyBiometricPunch = async (
       ],
     });
 
+    return attendance;
+  }
+
+  // HR manually marked absent — do not overwrite with biometric punches.
+  if (attendance.isManuallyUpdated && attendance.status === "ABSENT") {
     return attendance;
   }
 
@@ -350,9 +338,7 @@ const clockIn = async (userId) => {
     throw new Error("User not found");
   }
 
-  const day = new Date().getDay();
-
-  if (day === 0 || day === 6) {
+  if (isIstWeekendNow()) {
     throw new Error(
       "Weekend attendance not allowed"
     );
@@ -750,27 +736,86 @@ const normalizeBiometricCode = (value) => {
   return String(numericValue).padStart(4, "0");
 };
 
-const parseBiometricTimeToIso = (dateKey, value) => {
-  if (!value || value === "--" || value === "-" || value === "00:00") {
-    return null;
+const parseBiometricTimeToDate = (dateKey, value) =>
+  parseIstTimeOnDate(dateKey, value);
+
+const canOverrideWithBiometric = (attendance, field) => {
+  if (!attendance) {
+    return true;
   }
 
-  const normalized = String(value).trim();
-  const hasSeconds = /^\d{2}:\d{2}:\d{2}$/.test(normalized);
-  const hasMinutes = /^\d{2}:\d{2}$/.test(normalized);
-
-  if (!hasSeconds && !hasMinutes) {
-    return null;
+  if (
+    field === "clockIn" &&
+    attendance.clockInSource === "MANUAL" &&
+    attendance.clockIn
+  ) {
+    return false;
   }
 
-  const timeValue = hasSeconds ? normalized : `${normalized}:00`;
-  const parsed = new Date(`${dateKey}T${timeValue}`);
-
-  if (Number.isNaN(parsed.getTime())) {
-    return null;
+  if (
+    field === "clockOut" &&
+    attendance.clockOutSource === "MANUAL" &&
+    attendance.clockOut
+  ) {
+    return false;
   }
 
-  return parsed.toISOString();
+  return true;
+};
+
+const shouldApplyBiometricClockIn = (existingClockIn, biometricClockIn, attendance) => {
+  if (!biometricClockIn) {
+    return false;
+  }
+
+  if (!canOverrideWithBiometric(attendance, "clockIn")) {
+    return false;
+  }
+
+  if (!existingClockIn) {
+    return true;
+  }
+
+  if (attendance?.clockInSource === "BIOMETRIC") {
+    return (
+      formatIstTimePart(existingClockIn) !==
+      formatIstTimePart(biometricClockIn)
+    );
+  }
+
+  return biometricClockIn < existingClockIn;
+};
+
+const shouldApplyBiometricClockOut = (
+  existingClockOut,
+  biometricClockOut,
+  effectiveClockIn,
+  attendance
+) => {
+  if (!biometricClockOut || !effectiveClockIn) {
+    return false;
+  }
+
+  if (biometricClockOut <= effectiveClockIn) {
+    return false;
+  }
+
+  if (!canOverrideWithBiometric(attendance, "clockOut")) {
+    return false;
+  }
+
+  if (!existingClockOut) {
+    return true;
+  }
+
+  if (attendance?.clockOutSource === "BIOMETRIC") {
+    return (
+      formatIstTimePart(existingClockOut) !==
+      formatIstTimePart(biometricClockOut)
+    );
+  }
+
+  return biometricClockOut > existingClockOut;
 };
 
 const getAttendanceFromBiometric = (existingAttendance, biometricRecord, dateKey) => {
@@ -778,8 +823,8 @@ const getAttendanceFromBiometric = (existingAttendance, biometricRecord, dateKey
     return existingAttendance;
   }
 
-  const biometricClockIn = parseBiometricTimeToIso(dateKey, biometricRecord.inTime);
-  const biometricClockOut = parseBiometricTimeToIso(dateKey, biometricRecord.outTime);
+  const biometricClockIn = parseBiometricTimeToDate(dateKey, biometricRecord.inTime);
+  const biometricClockOut = parseBiometricTimeToDate(dateKey, biometricRecord.outTime);
 
   if (!existingAttendance) {
     if (!biometricClockIn && !biometricClockOut) {
@@ -806,10 +851,30 @@ const getAttendanceFromBiometric = (existingAttendance, biometricRecord, dateKey
     };
   }
 
+  const useBiometricClockIn =
+    biometricClockIn &&
+    canOverrideWithBiometric(existingAttendance, "clockIn") &&
+    (
+      !existingAttendance.clockIn ||
+      existingAttendance.clockInSource === "BIOMETRIC"
+    );
+
+  const useBiometricClockOut =
+    biometricClockOut &&
+    canOverrideWithBiometric(existingAttendance, "clockOut") &&
+    (
+      !existingAttendance.clockOut ||
+      existingAttendance.clockOutSource === "BIOMETRIC"
+    );
+
   return {
     ...existingAttendance,
-    clockIn: existingAttendance.clockIn || biometricClockIn,
-    clockOut: existingAttendance.clockOut || biometricClockOut,
+    clockIn: useBiometricClockIn
+      ? biometricClockIn
+      : existingAttendance.clockIn || biometricClockIn,
+    clockOut: useBiometricClockOut
+      ? biometricClockOut
+      : existingAttendance.clockOut || biometricClockOut,
     clockInSource:
       existingAttendance.clockInSource ||
       (biometricClockIn ? "BIOMETRIC" : existingAttendance.clockInSource),
@@ -879,15 +944,8 @@ const syncAttendanceFromBiometricInOut = async (
       continue;
     }
 
-    const biometricClockInIso = parseBiometricTimeToIso(dateKey, record.inTime);
-    const biometricClockOutIso = parseBiometricTimeToIso(dateKey, record.outTime);
-
-    const biometricClockIn = biometricClockInIso
-      ? new Date(biometricClockInIso)
-      : null;
-    const biometricClockOut = biometricClockOutIso
-      ? new Date(biometricClockOutIso)
-      : null;
+    const biometricClockIn = parseBiometricTimeToDate(dateKey, record.inTime);
+    const biometricClockOut = parseBiometricTimeToDate(dateKey, record.outTime);
 
     if (!biometricClockIn && !biometricClockOut) {
       continue;
@@ -895,6 +953,10 @@ const syncAttendanceFromBiometricInOut = async (
 
     const employeeIdKey = String(employee._id);
     let attendance = attendanceByEmployeeId.get(employeeIdKey);
+
+    if (attendance?.isManuallyUpdated && attendance?.status === "ABSENT") {
+      continue;
+    }
 
     if (!attendance) {
       if (!biometricClockIn) {
@@ -956,7 +1018,7 @@ const syncAttendanceFromBiometricInOut = async (
     let effectiveClockIn = attendance.clockIn ? new Date(attendance.clockIn) : null;
     let effectiveClockOut = attendance.clockOut ? new Date(attendance.clockOut) : null;
 
-    if (biometricClockIn && (!effectiveClockIn || biometricClockIn < effectiveClockIn)) {
+    if (shouldApplyBiometricClockIn(effectiveClockIn, biometricClockIn, attendance)) {
       attendance.clockIn = biometricClockIn;
       attendance.clockInSource = "BIOMETRIC";
       effectiveClockIn = biometricClockIn;
@@ -972,10 +1034,12 @@ const syncAttendanceFromBiometricInOut = async (
     }
 
     if (
-      biometricClockOut &&
-      effectiveClockIn &&
-      biometricClockOut > effectiveClockIn &&
-      (!effectiveClockOut || biometricClockOut > effectiveClockOut)
+      shouldApplyBiometricClockOut(
+        effectiveClockOut,
+        biometricClockOut,
+        effectiveClockIn,
+        attendance
+      )
     ) {
       attendance.clockOut = biometricClockOut;
       attendance.clockOutSource = "BIOMETRIC";
@@ -1052,16 +1116,7 @@ const MONTH_LABELS = [
   "DECEMBER",
 ];
 
-const formatTimePart = (dateValue) => {
-  if (!dateValue) {
-    return "";
-  }
-
-  const value = new Date(dateValue);
-  const hours = String(value.getHours()).padStart(2, "0");
-  const minutes = String(value.getMinutes()).padStart(2, "0");
-  return `${hours}:${minutes}`;
-};
+const formatTimePart = (dateValue) => formatIstTimePart(dateValue);
 
 const formatMonthlySheetCell = (record, isWeekend, isFutureDate) => {
   if (isFutureDate) {
@@ -1328,8 +1383,7 @@ const getAttendanceDashboardDetails = async (dateKey) => {
       attendance: formatAttendanceSummary(record),
     }));
 
-  const startOfDay = new Date(`${today}T00:00:00`);
-  const endOfDay = new Date(`${today}T23:59:59`);
+  const { start: startOfDay, end: endOfDay } = getIstDayBounds(today);
 
   const recentBiometricPunches =
     await ProcessedBiometricPunch.find({
@@ -1472,6 +1526,29 @@ const getMyAttendanceDashboard = async (
     throw new Error("User not found");
   }
 
+  const employeeById = new Map([[String(userId), user]]);
+  const employeeByCode = new Map();
+  const normalizedCode = normalizeBiometricCode(
+    user.biometricEmpCode || user.employeeId?.replace(/^DOB/i, "")
+  );
+
+  if (normalizedCode) {
+    employeeByCode.set(normalizedCode, user);
+  }
+
+  const biometricInOutResponse =
+    await fetchBiometricInOutForUser(
+      userId,
+      today
+    );
+
+  await syncAttendanceFromBiometricInOut(
+    today,
+    biometricInOutResponse.records,
+    employeeById,
+    employeeByCode
+  );
+
   const todayAttendance = await Attendance.findOne({
     employee: userId,
     date: today,
@@ -1483,12 +1560,6 @@ const getMyAttendanceDashboard = async (
     .sort({ date: -1 })
     .limit(15)
     .lean();
-
-  const biometricInOutResponse =
-    await fetchBiometricInOutForUser(
-      userId,
-      today
-    );
 
   const biometricToday =
     biometricInOutResponse.records[0] || null;
@@ -1580,6 +1651,8 @@ const getEmployeeAttendance =
         employee:
           user._id,
       })
+        .populate("punchEvents.by", "name employeeId role")
+        .populate("updatedBy", "name employeeId role")
         .sort({
           date: -1,
         })
@@ -1596,6 +1669,43 @@ const getEmployeeAttendance =
       data: records,
     };
   };
+
+const syncMonthlyAttendanceFromBiometric = async (
+  month,
+  year,
+  employeeById,
+  employeeByCode
+) => {
+  const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const monthEnd = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+  const today = getTodayDateKey();
+  const effectiveEnd = monthEnd > today ? today : monthEnd;
+
+  if (monthStart > today) {
+    return;
+  }
+
+  const rangeResponse = await fetchBiometricInOutForRange(
+    monthStart,
+    effectiveEnd
+  );
+
+  if (rangeResponse.error) {
+    return;
+  }
+
+  const dateKeys = Object.keys(rangeResponse.recordsByDate).sort();
+
+  for (const dateKey of dateKeys) {
+    await syncAttendanceFromBiometricInOut(
+      dateKey,
+      rangeResponse.recordsByDate[dateKey],
+      employeeById,
+      employeeByCode
+    );
+  }
+};
 
 const getMonthlyTeamSheet = async (month, year, employeeId = "") => {
   if (!month || !year || month < 1 || month > 12) {
@@ -1614,9 +1724,30 @@ const getMonthlyTeamSheet = async (month, year, employeeId = "") => {
   }
 
   const activeEmployees = await User.find(userFilter)
-    .select("employeeId biometricEmpCode name designation department")
+    .select("employeeId biometricEmpCode name designation department officeTiming")
     .sort({ name: 1 })
     .lean();
+
+  const employeeById = new Map();
+  const employeeByCode = new Map();
+  activeEmployees.forEach((employee) => {
+    employeeById.set(String(employee._id), employee);
+
+    const normalizedCode = normalizeBiometricCode(
+      employee.biometricEmpCode || employee.employeeId?.replace(/^DOB/i, "")
+    );
+
+    if (normalizedCode) {
+      employeeByCode.set(normalizedCode, employee);
+    }
+  });
+
+  await syncMonthlyAttendanceFromBiometric(
+    month,
+    year,
+    employeeById,
+    employeeByCode
+  );
 
   const employeeIds = activeEmployees.map((employee) => employee._id);
 
@@ -1643,15 +1774,8 @@ const getMonthlyTeamSheet = async (month, year, employeeId = "") => {
   const rows = Array.from({ length: lastDay }, (_, index) => {
     const dayNumber = index + 1;
     const date = `${year}-${String(month).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
-    const dateValue = new Date(`${date}T00:00:00`);
-    const day = dateValue
-      .toLocaleDateString("en-US", {
-        weekday: "short",
-      })
-      .toUpperCase();
-
-    const weekday = dateValue.getDay();
-    const isWeekend = weekday === 0 || weekday === 6;
+    const day = getIstWeekdayShort(date);
+    const isWeekend = isIstWeekendDateKey(date);
     const isFutureDate = date > todayDateKey;
 
     const cells = activeEmployees.map((employee) => {
@@ -1691,14 +1815,17 @@ const manualUpdateAttendance = async (
   body,
   updatedBy
 ) => {
-  const { clockIn, clockOut, reason, date, employeeId } = body;
-
-  if (!clockIn && !clockOut) {
-    throw new Error("Clock In or Clock Out is required");
-  }
+  const { clockIn, clockOut, reason, date, employeeId, status } = body;
 
   if (!reason) {
     throw new Error("Reason is required");
+  }
+
+  const normalizedStatus =
+    status === "ABSENT" || status === "PRESENT" ? status : null;
+
+  if (!normalizedStatus && !clockIn && !clockOut) {
+    throw new Error("Clock In or Clock Out is required");
   }
 
   let targetEmployeeId = null;
@@ -1750,14 +1877,44 @@ const manualUpdateAttendance = async (
     });
   }
 
+  if (normalizedStatus === "ABSENT") {
+    attendance.clockIn = null;
+    attendance.clockOut = null;
+    attendance.status = "ABSENT";
+    attendance.workingMinutes = 0;
+    attendance.lateMinutes = 0;
+    attendance.overtimeMinutes = 0;
+    attendance.shortfallMinutes = 0;
+    attendance.earlyOutMinutes = 0;
+    attendance.employeeId = user?.employeeId || attendance.employeeId;
+    attendance.employeeName = user?.name || attendance.employeeName;
+    attendance.biometricEmpCode =
+      user?.biometricEmpCode || attendance.biometricEmpCode;
+    attendance.updatedBy = updatedBy;
+    attendance.updateReason = reason;
+    attendance.isManuallyUpdated = true;
+
+    await attendance.save();
+
+    return {
+      success: true,
+      message: "Attendance marked as absent",
+      data: attendance,
+    };
+  }
+
+  if (normalizedStatus === "PRESENT" && !clockIn && !clockOut) {
+    throw new Error("Clock In or Clock Out is required for present status");
+  }
+
   const existingClockIn = attendance.clockIn || null;
   const existingClockOut = attendance.clockOut || null;
 
   const nextClockIn = clockIn
-    ? new Date(`${targetDate}T${clockIn}:00`)
+    ? parseIstTimeOnDate(targetDate, `${clockIn}:00`)
     : existingClockIn;
   const nextClockOut = clockOut
-    ? new Date(`${targetDate}T${clockOut}:00`)
+    ? parseIstTimeOnDate(targetDate, `${clockOut}:00`)
     : existingClockOut;
 
   if (clockOut && !nextClockIn) {

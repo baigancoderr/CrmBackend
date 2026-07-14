@@ -1,6 +1,11 @@
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const {
+  CHAT_MAX_ATTACHMENT_SIZE_BYTES,
+  CHAT_UNSUPPORTED_FILE_MESSAGE,
+  isChatAttachmentAllowed,
+} = require("../constants/chatAttachments");
 
 const isPrivateStorageEnabled =
   process.env.CHAT_UPLOAD_PRIVATE_STORAGE === "true";
@@ -36,27 +41,11 @@ const storage = multer.diskStorage({
   },
 });
 
-const allowedMimeTypes = [
-  "image/jpeg",
-  "image/png",
-  "image/jpg",
-  "image/webp",
-  "application/pdf",
-  "application/zip",
-  "application/x-zip-compressed",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-];
-
 const fileFilter = (req, file, cb) => {
-  if (allowedMimeTypes.includes(file.mimetype)) {
+  if (isChatAttachmentAllowed(file.originalname, file.mimetype)) {
     cb(null, true);
   } else {
-    cb(
-      new Error(
-        "Only jpg, jpeg, png, webp, pdf, docx and zip allowed"
-      ),
-      false
-    );
+    cb(new Error(CHAT_UNSUPPORTED_FILE_MESSAGE), false);
   }
 };
 
@@ -64,6 +53,6 @@ module.exports = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 10 * 1024 * 1024,
+    fileSize: CHAT_MAX_ATTACHMENT_SIZE_BYTES,
   },
 });

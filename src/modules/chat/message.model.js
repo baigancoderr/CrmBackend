@@ -74,6 +74,12 @@ const messageSchema = new mongoose.Schema(
       default: null,
     },
 
+    forwardedFrom: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+    },
+
     mentions: [
       {
         type: mongoose.Schema.Types.ObjectId,

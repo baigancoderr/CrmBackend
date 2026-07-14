@@ -3,6 +3,7 @@ const Message = require("./message.model");
 const User = require("../user/user.model");
 const path = require("path");
 const fs = require("fs/promises");
+const { redisClient } = require("../../config/redis");
 const {
   logAuditEvent,
   incrementMetric,
@@ -17,6 +18,9 @@ const GROUP_MANAGER_ROLES = [
 
 const USER_POPULATE_FIELDS =
   "name employeeId role designation department profilePhoto";
+
+const DRAWER_USER_FIELDS =
+  "name employeeId role designation department profilePhoto email phone";
 
 const isPrivateStorageEnabled =
   process.env.CHAT_UPLOAD_PRIVATE_STORAGE === "true";
@@ -159,6 +163,14 @@ const populateMessage = (query) => {
     .populate("sender", USER_POPULATE_FIELDS)
     .populate("mentions", USER_POPULATE_FIELDS)
     .populate({
+      path: "forwardedFrom",
+      select: "content type sender conversation",
+      populate: {
+        path: "sender",
+        select: USER_POPULATE_FIELDS,
+      },
+    })
+    .populate({
       path: "replyTo",
       populate: {
         path: "sender",
@@ -182,7 +194,7 @@ const getUnreadCountForConversation = async (
   });
 };
 
-const buildMessagePreviewFromType = (type, content) => {
+const buildMessagePreviewFromType = (type, content, fileMeta) => {
   const normalizedContent =
     typeof content === "string" ? content.trim() : "";
 
@@ -191,10 +203,45 @@ const buildMessagePreviewFromType = (type, content) => {
   }
 
   if (type === "FILE") {
-    return "📎 File";
+    const fileName =
+      typeof fileMeta?.name === "string" ? fileMeta.name.trim() : "";
+
+    return fileName ? `📎 ${fileName}` : "📎 File";
   }
 
   return normalizedContent;
+};
+
+const getVisibleLastMessageForUser = async (
+  conversationId,
+  userId
+) => {
+  const latestMessage = await Message.findOne({
+    conversation: conversationId,
+    isDeletedForAll: false,
+    deletedFor: { $ne: userId },
+  })
+    .sort({ createdAt: -1 })
+    .select("type content fileMeta sender createdAt")
+    .lean();
+
+  if (!latestMessage) {
+    return {
+      text: "",
+      sender: null,
+      sentAt: null,
+    };
+  }
+
+  return {
+    text: buildMessagePreviewFromType(
+      latestMessage.type,
+      latestMessage.content,
+      latestMessage.fileMeta
+    ),
+    sender: latestMessage.sender || null,
+    sentAt: latestMessage.createdAt,
+  };
 };
 
 const refreshConversationLastMessage = async (
@@ -205,7 +252,7 @@ const refreshConversationLastMessage = async (
     isDeletedForAll: false,
   })
     .sort({ createdAt: -1 })
-    .select("type content sender createdAt")
+    .select("type content fileMeta sender createdAt")
     .lean();
 
   if (!latestMessage) {
@@ -224,7 +271,8 @@ const refreshConversationLastMessage = async (
     lastMessage: {
       text: buildMessagePreviewFromType(
         latestMessage.type,
-        latestMessage.content
+        latestMessage.content,
+        latestMessage.fileMeta
       ),
       sender: latestMessage.sender || null,
       sentAt: latestMessage.createdAt,
@@ -301,6 +349,7 @@ const formatConversation = async (conversation, userId) => {
 
   let displayName = conversation.name;
   let displayPhoto = conversation.photo;
+  let otherUserId = null;
 
   if (conversation.type === "DM") {
     const otherMember = conversation.members.find(
@@ -313,13 +362,21 @@ const formatConversation = async (conversation, userId) => {
     if (otherMember && otherMember.user) {
       displayName = otherMember.user.name;
       displayPhoto = otherMember.user.profilePhoto || "";
+      otherUserId = otherMember.user._id?.toString() || null;
     }
   }
+
+  const visibleLastMessage = await getVisibleLastMessageForUser(
+    conversation._id,
+    userId
+  );
 
   return {
     ...conversation,
     displayName,
     displayPhoto,
+    otherUserId,
+    lastMessage: visibleLastMessage,
     unreadCount,
     myRole: member ? member.role : null,
     lastReadAt: member ? member.lastReadAt : null,
@@ -1023,7 +1080,7 @@ const sendMessage = async (
 
   assertActiveMember(conversation, user.id);
 
-  const { content, type = "TEXT", replyTo, mentions = [] } =
+  const { content, type = "TEXT", replyTo, mentions = [], forwardedFrom = null } =
     payload;
   const normalizedContent =
     typeof content === "string" ? content.trim() : "";
@@ -1058,6 +1115,7 @@ const sendMessage = async (
     content: normalizedContent,
     fileMeta: payload.fileMeta || undefined,
     replyTo: replyTo || null,
+    forwardedFrom: forwardedFrom || null,
     mentions: validMentions,
     readBy: [
       {
@@ -1069,7 +1127,8 @@ const sendMessage = async (
 
   const previewText = buildMessagePreviewFromType(
     type,
-    normalizedContent
+    normalizedContent,
+    payload.fileMeta
   );
 
   await Conversation.findByIdAndUpdate(conversationId, {
@@ -1254,15 +1313,27 @@ const deleteMessage = async (
     }
   }
 
+  const visibleLastMessage = await getVisibleLastMessageForUser(
+    message.conversation,
+    userId
+  );
+
   if (io) {
-    io.to(`conversation:${message.conversation}`).emit(
-      "message:deleted",
-      {
-        conversationId: message.conversation,
-        messageId: message._id,
-        scope,
-      }
-    );
+    const deletePayload = {
+      conversationId: message.conversation,
+      messageId: message._id,
+      scope,
+      lastMessage: visibleLastMessage,
+    };
+
+    if (scope === "all") {
+      io.to(`conversation:${message.conversation}`).emit(
+        "message:deleted",
+        deletePayload
+      );
+    } else {
+      io.to(`user:${userId}`).emit("message:deleted", deletePayload);
+    }
   }
 
   await incrementMetric("chat_message_deleted", {
@@ -1373,6 +1444,126 @@ const getUnreadCount = async (userId) => {
   };
 };
 
+const getUsersPresence = async (userIds = []) => {
+  const uniqueIds = normalizeUserIds(userIds);
+  const presence = {};
+
+  let inMemoryPresence = {};
+
+  try {
+    const { getOnlinePresenceMap } = require("./chat.socket");
+    inMemoryPresence = getOnlinePresenceMap();
+  } catch (_error) {
+    inMemoryPresence = {};
+  }
+
+  await Promise.all(
+    uniqueIds.map(async (id) => {
+      if (inMemoryPresence[id]) {
+        presence[id] = true;
+        return;
+      }
+
+      try {
+        const value = await redisClient.get(`presence:${id}`);
+        presence[id] = value === "online";
+      } catch (_error) {
+        presence[id] = false;
+      }
+    })
+  );
+
+  return presence;
+};
+
+const touchUserPresence = async (userId) => {
+  if (!userId) {
+    return;
+  }
+
+  try {
+    await redisClient.set(`presence:${userId}`, "online", {
+      EX: 45,
+    });
+  } catch (_error) {
+    // Ignore redis issues; chat presence can still rely on in-memory/socket events.
+  }
+};
+
+const forwardMessage = async (
+  messageId,
+  targetConversationIds,
+  user,
+  io
+) => {
+  const message = await Message.findById(messageId);
+
+  if (!message || message.isDeletedForAll) {
+    throw new Error("Message not found");
+  }
+
+  if (
+    message.deletedFor.some(
+      (id) => id.toString() === user.id.toString()
+    )
+  ) {
+    throw new Error("Message not found");
+  }
+
+  const sourceConversation = await Conversation.findById(
+    message.conversation
+  );
+
+  assertActiveMember(sourceConversation, user.id);
+
+  const uniqueTargets = normalizeUserIds(targetConversationIds);
+
+  if (!uniqueTargets.length) {
+    throw new Error("Select at least one conversation to forward to");
+  }
+
+  const forwardedMessages = [];
+
+  for (const targetConversationId of uniqueTargets) {
+    if (
+      targetConversationId.toString() ===
+      message.conversation.toString()
+    ) {
+      continue;
+    }
+
+    const targetConversation = await Conversation.findById(
+      targetConversationId
+    );
+
+    if (!targetConversation || targetConversation.isDeleted) {
+      throw new Error("Target conversation not found");
+    }
+
+    assertActiveMember(targetConversation, user.id);
+
+    const forwardedMessage = await sendMessage(
+      targetConversationId,
+      {
+        type: message.type,
+        content: message.content,
+        fileMeta: message.fileMeta || undefined,
+        forwardedFrom: message._id,
+      },
+      user,
+      io
+    );
+
+    forwardedMessages.push(forwardedMessage);
+  }
+
+  if (!forwardedMessages.length) {
+    throw new Error("Select a different conversation to forward to");
+  }
+
+  return forwardedMessages;
+};
+
 const getFileAbsolutePath = (fileName) => {
   const folder = isPrivateStorageEnabled
     ? "../../uploads-private/chat"
@@ -1424,6 +1615,160 @@ const getChatFilePathForUser = async (fileName, userId) => {
   return absolutePath;
 };
 
+const assertCanViewConversation = async (
+  conversationId,
+  userId,
+  userRole = ""
+) => {
+  const conversation = await Conversation.findById(conversationId);
+
+  if (!conversation || conversation.isDeleted) {
+    throw new Error("Conversation not found");
+  }
+
+  if (
+    !(
+      isGroupManagerRole(userRole) &&
+      conversation.type === "GROUP"
+    )
+  ) {
+    assertActiveMember(conversation, userId);
+  }
+
+  return conversation;
+};
+
+const getConversationDrawerInfo = async (
+  conversationId,
+  userId,
+  userRole = ""
+) => {
+  await assertCanViewConversation(conversationId, userId, userRole);
+
+  const conversation = await populateConversation(
+    Conversation.findById(conversationId)
+  );
+
+  if (!conversation) {
+    throw new Error("Conversation not found");
+  }
+
+  const conversationObject = conversation.toObject();
+
+  if (conversationObject.type === "DM") {
+    const otherMember = conversationObject.members.find((entry) => {
+      const memberUserId = entry.user?._id?.toString();
+
+      return memberUserId && memberUserId !== userId.toString() && !entry.leftAt;
+    });
+
+    if (!otherMember?.user?._id) {
+      throw new Error("Contact not found");
+    }
+
+    const profile = await User.findById(otherMember.user._id)
+      .select(DRAWER_USER_FIELDS)
+      .lean();
+
+    if (!profile) {
+      throw new Error("Contact not found");
+    }
+
+    return {
+      type: "DM",
+      profile,
+      otherUserId: profile._id?.toString() || null,
+    };
+  }
+
+  const activeMemberUsers = conversationObject.members
+    .filter((member) => !member.leftAt && member.user?._id)
+    .map((member) => member.user);
+
+  const memberIds = activeMemberUsers.map((user) => user._id);
+  const usersWithContact = await User.find({
+    _id: { $in: memberIds },
+  })
+    .select(DRAWER_USER_FIELDS)
+    .lean();
+
+  const userMap = new Map(
+    usersWithContact.map((user) => [user._id.toString(), user])
+  );
+
+  const members = conversationObject.members
+    .filter((member) => !member.leftAt && member.user?._id)
+    .map((member) => {
+      const memberUser = userMap.get(member.user._id.toString()) || member.user;
+
+      return {
+        _id: memberUser._id,
+        name: memberUser.name,
+        employeeId: memberUser.employeeId,
+        role: memberUser.role,
+        designation: memberUser.designation,
+        department: memberUser.department,
+        profilePhoto: memberUser.profilePhoto,
+        email: memberUser.email,
+        phone: memberUser.phone,
+        chatRole: member.role,
+      };
+    });
+
+  return {
+    type: "GROUP",
+    name: conversationObject.name || "",
+    description: conversationObject.description || "",
+    photo: conversationObject.photo || "",
+    memberCount: members.length,
+    members,
+  };
+};
+
+const getConversationAttachments = async (
+  conversationId,
+  userId,
+  userRole = "",
+  query = {}
+) => {
+  await assertCanViewConversation(conversationId, userId, userRole);
+
+  const attachmentType =
+    query.type === "documents" ? "documents" : "media";
+  const page = Math.max(1, Number(query.page) || 1);
+  const limit = Math.min(50, Math.max(1, Number(query.limit) || 24));
+  const skip = (page - 1) * limit;
+
+  const filter = {
+    conversation: conversationId,
+    isDeletedForAll: false,
+    deletedFor: { $ne: userId },
+    type: attachmentType === "media" ? "IMAGE" : "FILE",
+  };
+
+  const [data, totalRecords] = await Promise.all([
+    Message.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select("type content fileMeta createdAt sender")
+      .populate("sender", USER_POPULATE_FIELDS)
+      .lean(),
+    Message.countDocuments(filter),
+  ]);
+
+  const totalPages = Math.max(1, Math.ceil(totalRecords / limit) || 1);
+
+  return {
+    type: attachmentType,
+    page,
+    limit,
+    totalRecords,
+    totalPages,
+    data,
+  };
+};
+
 let socketIo = null;
 
 const setSocketIo = (io) => {
@@ -1451,7 +1796,12 @@ module.exports = {
   deleteMessage,
   markConversationAsRead,
   getUnreadCount,
+  getUsersPresence,
+  touchUserPresence,
+  forwardMessage,
   getChatFilePathForUser,
+  getConversationDrawerInfo,
+  getConversationAttachments,
   setSocketIo,
   getSocketIo,
 };

@@ -51,7 +51,10 @@ const getMyReports = async (req, res) => {
 
 const getAllReports = async (req, res) => {
   try {
-    const data = await dailyWorkReportService.getAllDailyWorkReports(req.query);
+    const data = await dailyWorkReportService.getAllDailyWorkReports(
+      req.query,
+      req.user
+    );
 
     return res.status(200).json({
       success: true,

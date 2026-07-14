@@ -15,6 +15,46 @@ const {
 
 const PRESENCE_TTL_SECONDS = 30;
 
+// In-memory presence works even when Redis TTL/socket adapter has issues.
+const onlineUsers = new Map();
+
+const normalizePresenceUserId = (userId) => userId?.toString() || "";
+
+const markUserOnline = (userId) => {
+  const normalizedId = normalizePresenceUserId(userId);
+
+  if (!normalizedId) {
+    return;
+  }
+
+  onlineUsers.set(normalizedId, Date.now());
+};
+
+const markUserOffline = (userId) => {
+  const normalizedId = normalizePresenceUserId(userId);
+
+  if (!normalizedId) {
+    return;
+  }
+
+  onlineUsers.delete(normalizedId);
+};
+
+const isUserOnlineInMemory = (userId) => {
+  const normalizedId = normalizePresenceUserId(userId);
+  return onlineUsers.has(normalizedId);
+};
+
+const getOnlinePresenceMap = () => {
+  const presence = {};
+
+  onlineUsers.forEach((_lastSeen, userId) => {
+    presence[userId] = true;
+  });
+
+  return presence;
+};
+
 const setUserPresence = async (userId, isOnline) => {
   const key = `presence:${userId}`;
 
@@ -135,22 +175,24 @@ const initializeChatSocket = (io) => {
   });
 
   io.on("connection", async (socket) => {
-    const userId = socket.user.id;
+    const userId = socket.user.id.toString();
     const userRoom = `user:${userId}`;
-    const wasOffline =
-      getActiveSocketCount(io, userId) === 0;
 
     socket.join(userRoom);
-    await setUserPresence(userId, true);
+    markUserOnline(userId);
 
-    if (wasOffline) {
-      io.emit("user:online", {
-        userId,
-        name: socket.user.name,
-      });
+    try {
+      await setUserPresence(userId, true);
+    } catch (_error) {
+      // Redis may be unavailable; in-memory presence still works.
     }
+
+    io.emit("user:online", {
+      userId,
+      name: socket.user.name,
+    });
     await logAuditEvent("chat_socket_connected", {
-      userId: userId.toString(),
+      userId,
       socketId: socket.id,
     });
 
@@ -350,29 +392,52 @@ const initializeChatSocket = (io) => {
         return;
       }
 
-      await refreshPresence(userId);
+      markUserOnline(userId);
+
+      try {
+        await refreshPresence(userId);
+      } catch (_error) {
+        // Keep in-memory presence even if Redis refresh fails.
+      }
     });
 
     socket.on("disconnect", async () => {
-      const remainingConnections = getActiveSocketCount(
-        io,
-        userId
-      );
+      try {
+        const activeSockets = await io
+          .in(userRoom)
+          .fetchSockets();
 
-      if (remainingConnections === 0) {
-        await setUserPresence(userId, false);
+        if (activeSockets.length === 0) {
+          markUserOffline(userId);
 
+          try {
+            await setUserPresence(userId, false);
+          } catch (_error) {
+            // Ignore Redis cleanup errors.
+          }
+
+          io.emit("user:offline", {
+            userId,
+          });
+        } else {
+          markUserOnline(userId);
+
+          try {
+            await refreshPresence(userId);
+          } catch (_error) {
+            // Ignore Redis refresh errors.
+          }
+        }
+      } catch (_error) {
+        markUserOffline(userId);
         io.emit("user:offline", {
           userId,
         });
-      } else {
-        await refreshPresence(userId);
       }
 
       await logAuditEvent("chat_socket_disconnected", {
-        userId: userId.toString(),
+        userId,
         socketId: socket.id,
-        remainingConnections,
       });
     });
   });
@@ -380,4 +445,6 @@ const initializeChatSocket = (io) => {
 
 module.exports = {
   initializeChatSocket,
+  isUserOnlineInMemory,
+  getOnlinePresenceMap,
 };

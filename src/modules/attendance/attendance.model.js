@@ -26,6 +26,10 @@ const punchEventSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    changedAt: {
+      type: Date,
+      default: Date.now,
+    },
   },
   { _id: false }
 );

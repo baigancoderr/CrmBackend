@@ -157,6 +157,10 @@ const userSchema = new mongoose.Schema(
             default: "",
         },
 
+        birthday: {
+            type: Date,
+        },
+
         joiningDate: {
             type: Date,
         },
@@ -220,7 +224,8 @@ employmentType: {
         "FULL_TIME",
         "PART_TIME",
         "INTERN",
-        "CONTRACT"
+        "CONTRACT",
+        "FREELANCER"
     ],
     default: "FULL_TIME"
 },

@@ -28,7 +28,7 @@ const io = new Server(server, {
   },
 });
 
-const PORT = process.env.PORT || 6000;
+const PORT = process.env.PORT || 8080;
 const isBiometricSyncEnabled =
   process.env.ETIME_SYNC_ENABLED !== "false";
 
@@ -39,8 +39,8 @@ const defaultAllowedOrigins = [
   "https://manageteam-api.fastsolution.cloud",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
-  "http://localhost:6000",
-  "http://127.0.0.1:6000",
+  "http://localhost:8080",
+  "http://127.0.0.1:8080",
 ];
 
 const envAllowedOrigins = (process.env.CORS_ORIGINS || "")
@@ -94,10 +94,20 @@ app.use(
   express.static(path.join(__dirname, "uploads"))
 );
 
+// Global Error Handler
+const errorMiddleware = require("./src/middleware/error.middleware");
+app.use(errorMiddleware);
+
 
 (async () => {
   try {
-    await connectDB();
+    const dbConnected = await connectDB();
+    if (!dbConnected) {
+      console.warn(
+        "The server will continue without MongoDB. Database-backed routes may fail until the connection is restored."
+      );
+    }
+
     await connectRedis();
     const socketPubClient = redisClient.duplicate();
     const socketSubClient = redisClient.duplicate();

@@ -25,6 +25,9 @@ const {
   getMessagesQuerySchema,
   editMessageSchema,
   deleteMessageQuerySchema,
+  forwardMessageSchema,
+  presenceQuerySchema,
+  conversationAttachmentsQuerySchema,
 } = require("./chat.validation");
 
 router.use(auth, observeChatHttp);
@@ -32,6 +35,14 @@ router.use(auth, observeChatHttp);
 router.get(
   "/unread-count",
   chatController.getUnreadCount
+);
+
+router.get(
+  "/presence",
+  validateRequest({
+    query: presenceQuerySchema,
+  }),
+  chatController.getUsersPresence
 );
 
 router.post(
@@ -117,6 +128,23 @@ router.get(
   chatController.getMessages
 );
 
+router.get(
+  "/conversations/:id/drawer-info",
+  validateRequest({
+    params: conversationIdParamSchema,
+  }),
+  chatController.getConversationDrawerInfo
+);
+
+router.get(
+  "/conversations/:id/attachments",
+  validateRequest({
+    params: conversationIdParamSchema,
+    query: conversationAttachmentsQuerySchema,
+  }),
+  chatController.getConversationAttachments
+);
+
 router.post(
   "/conversations/:id/messages",
   chatSendRateLimit,
@@ -162,6 +190,15 @@ router.delete(
     query: deleteMessageQuerySchema,
   }),
   chatController.deleteMessage
+);
+
+router.post(
+  "/messages/:messageId/forward",
+  validateRequest({
+    params: messageIdParamSchema,
+    body: forwardMessageSchema,
+  }),
+  chatController.forwardMessage
 );
 
 router.get(
