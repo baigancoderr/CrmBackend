@@ -46,16 +46,17 @@ const getAutoAllocatedLeaves = (joiningDate, year) => {
 };
 
 const getAccruedRemainingLeaves = ({
-  allocatedLeaves,
   usedLeaves,
   joiningDate,
   year,
   extraLeaves = 0,
 }) => {
   const accruedLeaves = getAutoAllocatedLeaves(joiningDate, year);
-  const spendableLeaves = Math.min(clampAnnualLeaves(allocatedLeaves), accruedLeaves);
-  const totalAvailable = roundLeaveValue(spendableLeaves + Math.max(extraLeaves, 0));
-  return roundLeaveValue(Math.max(totalAvailable - usedLeaves, 0));
+  // Used leaves are deducted from accrued; extra leaves add to available balance
+  const totalAvailable = roundLeaveValue(
+    accruedLeaves + Math.max(extraLeaves, 0)
+  );
+  return roundLeaveValue(Math.max(totalAvailable - Math.max(usedLeaves, 0), 0));
 };
 
 const buildLeaveBalanceResponse = (balanceDoc, joiningDate) => {
@@ -78,9 +79,9 @@ const upsertMonthlyLeaveBalance = async ({
   adminId = null,
   annualAllocation,
 }) => {
+  // One balance per employee (unique employeeId) — find without year lock
   let balance = await LeaveBalance.findOne({
     employeeId,
-    year,
     isDeleted: false,
     isActive: true,
   });
@@ -90,7 +91,6 @@ const upsertMonthlyLeaveBalance = async ({
       typeof annualAllocation === "number" ? annualAllocation : ANNUAL_LEAVE_LIMIT
     );
     const remainingLeaves = getAccruedRemainingLeaves({
-      allocatedLeaves,
       usedLeaves: 0,
       joiningDate,
       year,
@@ -109,11 +109,15 @@ const upsertMonthlyLeaveBalance = async ({
     return balance;
   }
 
+  // Keep year current when opening balance in a new calendar year
+  if (balance.year !== year) {
+    balance.year = year;
+  }
+
   const targetAllocatedLeaves = clampAnnualLeaves(
     typeof annualAllocation === "number" ? annualAllocation : balance.allocatedLeaves
   );
   const nextRemainingLeaves = getAccruedRemainingLeaves({
-    allocatedLeaves: targetAllocatedLeaves,
     usedLeaves: balance.usedLeaves,
     joiningDate,
     year,
@@ -122,6 +126,7 @@ const upsertMonthlyLeaveBalance = async ({
   const shouldUpdate =
     balance.allocatedLeaves !== targetAllocatedLeaves ||
     balance.remainingLeaves !== nextRemainingLeaves ||
+    balance.isModified("year") ||
     (adminId && String(balance.lastUpdatedBy || "") !== String(adminId));
 
   if (shouldUpdate) {
@@ -569,11 +574,19 @@ const approveLeave = async (id,approver) => {
     );
   }
 
-  // Deduct Leave Balance
+  // Deduct used leaves from accrued balance and recalculate remaining
   if (leave.leaveDeductionType ==="LEAVE_BALANCE" ||leave.leaveDeductionType ==="BOTH") {
-    balance.usedLeaves +=leave.leaveBalanceDays;
+    balance.usedLeaves = roundLeaveValue(
+      balance.usedLeaves + leave.leaveBalanceDays
+    );
+  }
 
-    balance.remainingLeaves -=leave.leaveBalanceDays;}
+  balance.remainingLeaves = getAccruedRemainingLeaves({
+    usedLeaves: balance.usedLeaves,
+    joiningDate: employee.joiningDate,
+    year: balance.year,
+    extraLeaves: balance.extraLeaves || 0,
+  });
 
   // Leave Balance History
   if (leave.leaveBalanceDays > 0) {
@@ -681,12 +694,21 @@ const rejectLeave = async (id,reason,approver) => {
     );
 };
 
-const allocateLeaveBalance = async (employeeId,allocatedLeaves,extraLeaves,admin) => {
+const allocateLeaveBalance = async (
+  employeeId,
+  allocatedLeaves,
+  extraLeaves,
+  usedLeaves,
+  admin
+) => {
   if (!canApproveLeave(admin.role)) {
     throw new Error(
       "You are not authorized to allocate leave."
     );
   }
+
+  // JWT auth sets `id`, not `_id`
+  const adminId = admin.id || admin._id || null;
 
   const employee = await User.findById(employeeId).select("joiningDate");
   if (!employee) {
@@ -696,7 +718,7 @@ const allocateLeaveBalance = async (employeeId,allocatedLeaves,extraLeaves,admin
   }
 
   let annualAllocation;
-  if (typeof allocatedLeaves !== "undefined") {
+  if (typeof allocatedLeaves !== "undefined" && allocatedLeaves !== null && allocatedLeaves !== "") {
     const parsedAllocatedLeaves = Number(allocatedLeaves);
     if (Number.isNaN(parsedAllocatedLeaves) || parsedAllocatedLeaves < 0) {
       throw new Error("Invalid allocated leave.");
@@ -705,7 +727,7 @@ const allocateLeaveBalance = async (employeeId,allocatedLeaves,extraLeaves,admin
   }
 
   let extraLeavesToAdd;
-  if (typeof extraLeaves !== "undefined") {
+  if (typeof extraLeaves !== "undefined" && extraLeaves !== null && extraLeaves !== "") {
     const parsedExtraLeaves = Number(extraLeaves);
     if (Number.isNaN(parsedExtraLeaves) || parsedExtraLeaves < 0) {
       throw new Error("Invalid extra leave.");
@@ -713,27 +735,51 @@ const allocateLeaveBalance = async (employeeId,allocatedLeaves,extraLeaves,admin
     extraLeavesToAdd = parsedExtraLeaves;
   }
 
+  // Absolute used count set by HR; remaining = accrued + extra - used
+  let usedLeavesToSet;
+  if (typeof usedLeaves !== "undefined" && usedLeaves !== null && usedLeaves !== "") {
+    const parsedUsedLeaves = Number(usedLeaves);
+    if (Number.isNaN(parsedUsedLeaves) || parsedUsedLeaves < 0) {
+      throw new Error("Invalid used leave. Must be a non-negative number.");
+    }
+    usedLeavesToSet = roundLeaveValue(parsedUsedLeaves);
+  }
+
   const year = new Date().getFullYear();
   const balance = await upsertMonthlyLeaveBalance({
     employeeId,
     year,
     joiningDate: employee.joiningDate,
-    adminId: admin._id,
+    adminId,
     annualAllocation,
   });
+
+  let balanceChanged = false;
 
   if (typeof extraLeavesToAdd === "number" && extraLeavesToAdd > 0) {
     balance.extraLeaves = roundLeaveValue(
       roundLeaveValue(balance.extraLeaves || 0) + extraLeavesToAdd
     );
+    balanceChanged = true;
+  }
+
+  if (typeof usedLeavesToSet === "number") {
+    balance.usedLeaves = usedLeavesToSet;
+    balance.markModified("usedLeaves");
+    balanceChanged = true;
+  }
+
+  // Always recalculate remaining from accrued - used + extra when anything changes
+  if (balanceChanged || typeof annualAllocation !== "undefined") {
     balance.remainingLeaves = getAccruedRemainingLeaves({
-      allocatedLeaves: balance.allocatedLeaves,
       usedLeaves: balance.usedLeaves,
       joiningDate: employee.joiningDate,
       year,
-      extraLeaves: balance.extraLeaves,
+      extraLeaves: balance.extraLeaves || 0,
     });
-    balance.lastUpdatedBy = admin._id;
+    if (adminId) {
+      balance.lastUpdatedBy = adminId;
+    }
     await balance.save();
   }
 

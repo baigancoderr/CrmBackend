@@ -470,11 +470,15 @@ Validation/business rules:
 
 ```json
 {
-  "allocatedLeaves": 18
+  "allocatedLeaves": 15,
+  "extraLeaves": 2,
+  "usedLeaves": 3
 }
 ```
 
-`allocatedLeaves` must be a non-negative number.
+- `allocatedLeaves` (optional): annual allocation, non-negative, max 15.
+- `extraLeaves` (optional): amount to **add** to current extra leaves (only applied if > 0).
+- `usedLeaves` (optional): absolute used leave count to **set** (non-negative). Remaining is recalculated as: accrued/allocated + extra − used.
 
 ### Leave balance access — `GET /leave/balance/:employeeId`
 

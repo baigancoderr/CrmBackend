@@ -143,6 +143,7 @@ const allocateLeaves = async (req, res) => {
         req.params.employeeId,
         req.body.allocatedLeaves,
         req.body.extraLeaves,
+        req.body.usedLeaves,
         req.user
       );
 
