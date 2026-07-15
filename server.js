@@ -87,12 +87,14 @@ app.options("/{*splat}", cors(corsOptions));
 app.use(express.json({ limit: "8mb" }));
 app.use(cookieParser());
 
+// Public disk uploads. Mount /api/uploads before /api routes so reverse
+// proxies that only forward /api still serve chat/employee/notes files.
+const uploadsPath = path.join(__dirname, "uploads");
+app.use("/uploads", express.static(uploadsPath));
+app.use("/api/uploads", express.static(uploadsPath));
+
 // Routes
 app.use("/api", routes);
-app.use(
-  "/uploads",
-  express.static(path.join(__dirname, "uploads"))
-);
 
 // Global Error Handler
 const errorMiddleware = require("./src/middleware/error.middleware");

@@ -161,7 +161,25 @@ router.post(
   validateRequest({
     params: conversationIdParamSchema,
   }),
-  chatUpload.single("file"),
+  (req, res, next) => {
+    chatUpload.single("file")(req, res, (err) => {
+      if (!err) {
+        return next();
+      }
+
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).json({
+          success: false,
+          message: "File is too large. Max size allowed is 10MB.",
+        });
+      }
+
+      return res.status(400).json({
+        success: false,
+        message: err.message || "Upload failed",
+      });
+    });
+  },
   chatFileSecurity,
   chatController.uploadMessageFile
 );

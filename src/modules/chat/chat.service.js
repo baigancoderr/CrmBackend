@@ -1191,9 +1191,10 @@ const sendFileMessage = async (
   io
 ) => {
   const isImage = file.mimetype.startsWith("image/");
+  // Prefer /api/uploads so nginx setups that only proxy /api can serve files.
   const filePath = isPrivateStorageEnabled
     ? `/api/chat/files/${file.filename}`
-    : `/uploads/chat/${file.filename}`;
+    : `/api/uploads/chat/${file.filename}`;
 
   return sendMessage(
     conversationId,
@@ -1565,6 +1566,7 @@ const getFileAbsolutePath = (fileName) => {
 
 const getFileContentCandidates = (fileName) => {
   return [
+    `/api/uploads/chat/${fileName}`,
     `/uploads/chat/${fileName}`,
     `/api/chat/files/${fileName}`,
   ];

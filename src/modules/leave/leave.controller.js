@@ -61,7 +61,8 @@ const getLeaveById = async (req, res) => {
 const getAllLeaves = async (req, res) => {
   try {
     const leaves = await leaveService.getAllLeaves(
-      req.query
+      req.query,
+      req.user
     );
 
     return res.status(200).json({
@@ -69,7 +70,7 @@ const getAllLeaves = async (req, res) => {
       data: leaves,
     });
   } catch (error) {
-    return res.status(400).json({
+    return res.status(error.statusCode || 400).json({
       success: false,
       message: error.message,
     });
@@ -89,7 +90,7 @@ const approveLeave = async (req, res) => {
       data: leave,
     });
   } catch (error) {
-    return res.status(400).json({
+    return res.status(error.statusCode || 400).json({
       success: false,
       message: error.message,
     });
@@ -110,7 +111,7 @@ const rejectLeave = async (req, res) => {
       data: leave,
     });
   } catch (error) {
-    return res.status(400).json({
+    return res.status(error.statusCode || 400).json({
       success: false,
       message: error.message,
     });

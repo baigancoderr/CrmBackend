@@ -25,6 +25,16 @@ const OFFICE_DETECTED_MIME_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 ]);
 
+const DANGEROUS_DETECTED_MIME_TYPES = new Set([
+  "application/x-msdownload",
+  "application/x-executable",
+  "application/x-dosexec",
+  "application/javascript",
+  "text/javascript",
+  "text/html",
+  "application/x-httpd-php",
+]);
+
 const isAllowedOfficeFile = (extension, detectedMime) => {
   if (!CHAT_OFFICE_EXTENSIONS.has(extension)) {
     return false;
@@ -52,8 +62,24 @@ const validateFileSignature = async (filePath, uploadMimeType, originalName = ""
     return;
   }
 
-  const detected = await fileTypeFromFile(filePath);
-  const detectedMime = detected?.mime || "";
+  let detectedMime = "";
+
+  try {
+    const detected = await fileTypeFromFile(filePath);
+    detectedMime = detected?.mime || "";
+  } catch (error) {
+    console.warn(
+      "[chatFileSecurity] file-type detection failed:",
+      error?.message || error
+    );
+
+    // Allowed extensions still pass when sniffing fails (common on some hosts).
+    if (CHAT_ALLOWED_EXTENSIONS.has(extension)) {
+      return;
+    }
+
+    throw new Error("Unable to detect file signature");
+  }
 
   if (!detectedMime) {
     if (CHAT_ALLOWED_EXTENSIONS.has(extension)) {
@@ -63,13 +89,25 @@ const validateFileSignature = async (filePath, uploadMimeType, originalName = ""
     throw new Error("Unable to detect file signature");
   }
 
+  if (DANGEROUS_DETECTED_MIME_TYPES.has(detectedMime)) {
+    throw new Error("File type not allowed");
+  }
+
   if (isAllowedOfficeFile(extension, detectedMime)) {
     return;
   }
 
-  if (!CHAT_ALLOWED_DETECTED_MIME_TYPES.has(detectedMime)) {
-    throw new Error("File type not allowed");
+  if (CHAT_ALLOWED_DETECTED_MIME_TYPES.has(detectedMime)) {
+    return;
   }
+
+  // Extension allow-list is source of truth when sniffing is ambiguous
+  // (e.g. some audio/video containers report uncommon mime strings).
+  if (CHAT_ALLOWED_EXTENSIONS.has(extension)) {
+    return;
+  }
+
+  throw new Error("File type not allowed");
 };
 
 const runVirusScanIfEnabled = async (filePath) => {

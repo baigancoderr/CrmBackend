@@ -1908,11 +1908,16 @@ const syncMonthlyAttendanceFromBiometric = async (
   );
 
   if (rangeResponse.error) {
+    console.warn(
+      `[Biometric Month Sync] ${monthStart}..${effectiveEnd} skipped: ${rangeResponse.error}`
+    );
     return;
   }
 
   const dateKeys = Object.keys(rangeResponse.recordsByDate).sort();
-
+  console.log(
+    `[Biometric Month Sync] Hydrating ${dateKeys.length} day(s) for ${month}/${year}`
+  );
   for (const dateKey of dateKeys) {
     await syncAttendanceFromBiometricInOut(
       dateKey,

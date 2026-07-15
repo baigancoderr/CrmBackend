@@ -130,6 +130,7 @@ const getMentionUsers = async (mentionIds = []) => {
 const APPROVER_ROLES = [
   "HR",
   "PROJECT_MANAGER",
+  "TL",
   "SUPER_ADMIN",
 ];
 

@@ -1,12 +1,28 @@
 const Leave = require("./leave.model");
 const LeaveBalance = require("./leaveBalance.model");
 const User = require("../user/user.model");
+const DailyWorkReport = require("../daily-work-report/dailyWorkReport.model");
 
 const {calculateLeaveDays,hasPendingLeave,getMentionUsers,canApproveLeave,} = require("./leave.helper");
 
 const LEAVE_ADMIN_ROLES = ["SUPER_ADMIN", "HR"];
+const REPORTING_MANAGER_ROLES = ["PROJECT_MANAGER", "TL", "HR", "SUPER_ADMIN"];
 const ANNUAL_LEAVE_LIMIT = 15;
 const MONTHLY_LEAVE_CREDIT = 1.25;
+
+const getTlScopedEmployeeIds = async (tlId) => {
+  const [byManager, byTeamLeader, byDwr] = await Promise.all([
+    User.find({ manager: tlId }).distinct("_id"),
+    User.find({ teamLeader: tlId }).distinct("_id"),
+    DailyWorkReport.distinct("employee", { reportingManager: tlId }),
+  ]);
+
+  return [
+    ...new Set(
+      [...byManager, ...byTeamLeader, ...byDwr].map((id) => String(id))
+    ),
+  ];
+};
 
 const roundLeaveValue = (value = 0) => Number(value.toFixed(2));
 const clampAnnualLeaves = (value = ANNUAL_LEAVE_LIMIT) =>
@@ -146,6 +162,7 @@ const createLeave = async (body,employeeId) => {
     leaveDeductionType,
     leaveBalanceDays = 0,
     salaryDeductionDays = 0,
+    reportingManagerId = "",
   } = body;
 
   if (!fromDate) {throw new Error("From Date is required.");}
@@ -250,7 +267,7 @@ const createLeave = async (body,employeeId) => {
     }
   }
 
-  const employee = await User.findById(employeeId).select("joiningDate");
+  const employee = await User.findById(employeeId).select("joiningDate manager");
   if (!employee) {
     throw new Error("Employee not found.");
   }
@@ -281,6 +298,25 @@ const createLeave = async (body,employeeId) => {
 
   const mentionUsers = await getMentionUsers(mentions);
 
+  let selectedManagerId = String(reportingManagerId || "").trim();
+  if (!selectedManagerId && employee.manager) {
+    selectedManagerId = String(employee.manager);
+  }
+
+  if (!selectedManagerId) {
+    throw new Error("Reporting manager is required.");
+  }
+
+  const reportingManager = await User.findOne({
+    _id: selectedManagerId,
+    role: { $in: REPORTING_MANAGER_ROLES },
+    isActive: true,
+  }).select("name employeeId role");
+
+  if (!reportingManager) {
+    throw new Error("Please select a valid reporting manager.");
+  }
+
   const leave =await Leave.create({
       employeeId,
       fromDate,
@@ -299,6 +335,8 @@ const createLeave = async (body,employeeId) => {
         mentionUsers.map(
           (user) => user._id
         ),
+      reportingManager: reportingManager._id,
+      reportingManagerSnapshot: reportingManager.name || "",
 
       createdBy: employeeId,
     });
@@ -442,16 +480,65 @@ const cancelLeave = async (id,employeeId) => {
   };
 };
 
-const getAllLeaves = async (query) => {
+const getAllLeaves = async (query, reviewer = null) => {
   const {page = 1,limit = 10,search = "",status,employeeId,year,} = query;
 
   const filter = {isDeleted: false,};
+
+  const currentPage = Math.max(Number(page),1);
+  const perPage = Math.max(Number(limit),1);
+  const skip = (currentPage - 1) * perPage;
+
+  const emptyResult = {
+    page: currentPage,
+    limit: perPage,
+    totalRecords: 0,
+    totalPages: 1,
+    data: [],
+  };
+
+  // TL sees leaves assigned to them (reportingManager), or from their reportees /
+  // DWR team (same people whose worksheets they already review).
+  // PM / HR / SUPER_ADMIN see the full list.
+  let allowedEmployeeIds = null;
+  if (reviewer?.role === "TL") {
+    const reviewerId = String(reviewer.id || reviewer._id || "");
+    allowedEmployeeIds = await getTlScopedEmployeeIds(reviewerId);
+
+    const leaveOr = [
+      { reportingManager: reviewerId },
+      { mentions: reviewerId },
+    ];
+
+    if (allowedEmployeeIds.length) {
+      leaveOr.push({ employeeId: { $in: allowedEmployeeIds } });
+    }
+
+    filter.$or = leaveOr;
+  }
 
   if (status) {
     filter.status = status;
   }
 
   if (employeeId) {
+    if (reviewer?.role === "TL") {
+      const reviewerId = String(reviewer.id || reviewer._id || "");
+      const inTeam = (allowedEmployeeIds || []).includes(String(employeeId));
+      if (!inTeam) {
+        const assignedToTl = await Leave.exists({
+          employeeId,
+          isDeleted: false,
+          $or: [
+            { reportingManager: reviewerId },
+            { mentions: reviewerId },
+          ],
+        });
+        if (!assignedToTl) {
+          return emptyResult;
+        }
+      }
+    }
     filter.employeeId = employeeId;
   }
 
@@ -461,34 +548,37 @@ const getAllLeaves = async (query) => {
     };
   }
 
-  if (search.trim()) {
-    const users = await User.find({
+  if (String(search || "").trim()) {
+    const userSearchFilter = {
       $or: [
         {
           name: {
-            $regex: search.trim(),
+            $regex: String(search).trim(),
             $options: "i",
           },
         },
         {
           employeeId: {
-            $regex: search.trim(),
+            $regex: String(search).trim(),
             $options: "i",
           },
         },
       ],
-    }).select("_id");
-
-    filter.employeeId = {
-      $in: users.map((u) => u._id),
     };
+
+    if (allowedEmployeeIds && allowedEmployeeIds.length) {
+      userSearchFilter._id = { $in: allowedEmployeeIds };
+    }
+
+    const users = await User.find(userSearchFilter).select("_id");
+    const searchedIds = users.map((u) => u._id);
+
+    if (!searchedIds.length) {
+      return emptyResult;
+    }
+
+    filter.employeeId = { $in: searchedIds };
   }
-
-  const currentPage = Math.max(Number(page),1);
-
-  const perPage = Math.max(Number(limit),1);
-
-  const skip = (currentPage - 1) * perPage;
 
   const totalRecords = await Leave.countDocuments(filter);
 
@@ -527,6 +617,34 @@ const getAllLeaves = async (query) => {
   };
 };
 
+const assertTlCanManageEmployeeLeave = async (employeeId, approver, leave = null) => {
+  if (approver?.role !== "TL") {
+    return;
+  }
+
+  const reviewerId = String(approver.id || approver._id || "");
+
+  if (
+    leave &&
+    (String(leave.reportingManager || "") === reviewerId ||
+      (Array.isArray(leave.mentions) &&
+        leave.mentions.some((id) => String(id) === reviewerId)))
+  ) {
+    return;
+  }
+
+  const scopedIds = await getTlScopedEmployeeIds(reviewerId);
+  if (scopedIds.includes(String(employeeId))) {
+    return;
+  }
+
+  const error = new Error(
+    "You can only manage leaves for employees who report to you."
+  );
+  error.statusCode = 403;
+  throw error;
+};
+
 
 const approveLeave = async (id,approver) => {
   if (!canApproveLeave(approver.role)) {
@@ -549,16 +667,20 @@ const approveLeave = async (id,approver) => {
     );
   }
 
+  await assertTlCanManageEmployeeLeave(leave.employeeId, approver, leave);
+
   const employee = await User.findById(leave.employeeId).select("joiningDate");
   if (!employee) {
     throw new Error("Employee not found.");
   }
 
+  const approverId = approver.id || approver._id;
+
   const balance = await upsertMonthlyLeaveBalance({
     employeeId: leave.employeeId,
     year: new Date().getFullYear(),
     joiningDate: employee.joiningDate,
-    adminId: approver._id,
+    adminId: approverId,
   });
 
   // Leave Balance Validation
@@ -595,7 +717,7 @@ const approveLeave = async (id,approver) => {
       fromDate: leave.fromDate,
       toDate: leave.toDate,
       days: leave.leaveBalanceDays,
-      approvedBy: approver._id,
+      approvedBy: approverId,
       approvedAt: new Date(),
     });
   }
@@ -619,10 +741,10 @@ const approveLeave = async (id,approver) => {
 
   leave.status = "APPROVED";
 
-  leave.approvedBy =approver._id;
+  leave.approvedBy = approverId;
   leave.approvedAt = new Date();
 
-  leave.updatedBy = approver._id;
+  leave.updatedBy = approverId;
 
   await leave.save();
 
@@ -669,11 +791,15 @@ const rejectLeave = async (id,reason,approver) => {
     );
   }
 
+  await assertTlCanManageEmployeeLeave(leave.employeeId, approver, leave);
+
+  const approverId = approver.id || approver._id;
+
   leave.status = "REJECTED";
   leave.rejectReason = reason?.trim() || "";
-  leave.rejectedBy = approver._id;
+  leave.rejectedBy = approverId;
   leave.rejectedAt = new Date();
-  leave.updatedBy = approver._id;
+  leave.updatedBy = approverId;
 
   await leave.save();
 

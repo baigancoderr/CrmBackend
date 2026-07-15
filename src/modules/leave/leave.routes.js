@@ -12,6 +12,7 @@ const APPROVER_ROLES = [
   "SUPER_ADMIN",
   "HR",
   "PROJECT_MANAGER",
+  "TL",
 ];
 
 // Employee

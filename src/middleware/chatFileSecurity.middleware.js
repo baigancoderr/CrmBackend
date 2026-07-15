@@ -32,25 +32,26 @@ const chatFileSecurity = async (req, res, next) => {
     }
 
     const userId = req.user?.id?.toString() || "unknown";
+    const reason = error?.message || "Invalid or unsafe file upload";
+
+    console.error("[chatFileSecurity] upload rejected:", {
+      userId,
+      originalName: req.file?.originalname,
+      mimeType: req.file?.mimetype,
+      reason,
+    });
 
     await incrementMetric("chat_upload_rejected", {
       userId,
     });
     await emitAbuseAlert("chat_upload_rejected", {
       userId,
-      reason: error.message,
+      reason,
     });
-
-    const isProduction =
-      process.env.NODE_ENV === "production";
-    const fallbackMessage =
-      "Invalid or unsafe file upload";
 
     return res.status(400).json({
       success: false,
-      message: isProduction
-        ? fallbackMessage
-        : error.message || fallbackMessage,
+      message: reason,
     });
   }
 };
