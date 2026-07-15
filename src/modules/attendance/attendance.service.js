@@ -1,5 +1,6 @@
 const Attendance = require("./attendance.model");
 const User = require("../user/user.model");
+const mongoose = require("mongoose");
 const ProcessedBiometricPunch = require("../biometric/processedPunch.model");
 const {
   getBiometricSyncStatus,
@@ -206,12 +207,25 @@ const addPunchEvent = (attendance, event) => {
   });
 
   if (!alreadyExists) {
+    let byId = null;
+    if (event.by) {
+      try {
+        byId = new mongoose.Types.ObjectId(String(event.by));
+      } catch (error) {
+        byId = null;
+      }
+    }
+
     attendance.punchEvents.push({
       action: event.action,
       source: event.source,
       time: eventTime,
-      by: event.by || null,
+      by: byId,
+      byName: event.byName || "",
+      byEmployeeId: event.byEmployeeId || "",
+      byRole: event.byRole || "",
       note: event.note || "",
+      previousTime: event.previousTime || null,
       changedAt: event.changedAt || new Date(),
     });
   }
@@ -534,6 +548,8 @@ const getMyHistory =
       await Attendance.find({
         employee: userId,
       })
+        .populate("punchEvents.by", "name employeeId role")
+        .populate("updatedBy", "name employeeId role")
         .sort({
           date: -1,
         })
@@ -714,7 +730,182 @@ const formatAttendanceSummary = (record) => {
     punchEvents: Array.isArray(record.punchEvents)
       ? record.punchEvents
       : [],
+    isManuallyUpdated: Boolean(record.isManuallyUpdated),
+    updateReason: record.updateReason || "",
+    updatedAt: record.updatedAt || null,
+    updatedBy: record.updatedBy || null,
   };
+};
+
+const formatUpdatedByName = (updatedBy) => {
+  if (!updatedBy) {
+    return "";
+  }
+
+  // Raw ObjectId / string id — cannot show a name without lookup.
+  if (typeof updatedBy === "string") {
+    return "";
+  }
+
+  if (typeof updatedBy !== "object") {
+    return "";
+  }
+
+  // Unpopulated mongoose ObjectId object (has no name).
+  if (!updatedBy.name && !updatedBy.employeeId && updatedBy._id && !updatedBy.role) {
+    return "";
+  }
+
+  if (updatedBy.employeeId) {
+    return `${updatedBy.name || "--"} (${updatedBy.employeeId})`;
+  }
+
+  return updatedBy.name || "";
+};
+
+const extractHrChangeReason = (note = "", fallback = "") => {
+  const cleaned = String(note || "")
+    .replace(/^Manual update:\s*/i, "")
+    .replace(/^Clock Out revoked:\s*/i, "")
+    .trim();
+
+  return cleaned || String(fallback || "").trim() || "--";
+};
+
+const isHrManualPunchEvent = (event) => {
+  const note = String(event?.note || "").toLowerCase();
+
+  return (
+    event?.source === "MANUAL" &&
+    (note.includes("manual update") || note.includes("clock out revoked"))
+  );
+};
+
+const getHrPunchActionLabel = (event) => {
+  const note = String(event?.note || "").toLowerCase();
+
+  if (note.includes("clock out revoked")) {
+    return "Clock Out Revoked";
+  }
+
+  if (event?.action === "CLOCK_IN") {
+    return "Clock In";
+  }
+
+  if (event?.action === "CLOCK_OUT") {
+    return "Clock Out";
+  }
+
+  return event?.action || "Update";
+};
+
+// Flatten HR/manual corrections so employees can see who changed what and why.
+const buildHrChangeHistory = (records = []) => {
+  const changes = [];
+
+  for (const record of records) {
+    const events = (record.punchEvents || [])
+      .filter(isHrManualPunchEvent)
+      .slice()
+      .sort((left, right) => {
+        const leftTime = left.changedAt
+          ? new Date(left.changedAt).getTime()
+          : 0;
+        const rightTime = right.changedAt
+          ? new Date(right.changedAt).getTime()
+          : 0;
+        return leftTime - rightTime;
+      });
+
+    // Infer previous punch time from earlier same-action events when not stored.
+    const lastTimeByAction = {};
+
+    // Prefer genuine previous clock values from non-manual punches first.
+    (record.punchEvents || []).forEach((event) => {
+      if (
+        event?.source !== "MANUAL" &&
+        event?.action &&
+        event?.time &&
+        !lastTimeByAction[event.action]
+      ) {
+        lastTimeByAction[event.action] = event.time;
+      }
+    });
+
+    for (const event of events) {
+      const actor =
+        event.by && typeof event.by === "object" && event.by.name
+          ? event.by
+          : null;
+
+      const isRevoked = String(event.note || "")
+        .toLowerCase()
+        .includes("clock out revoked");
+
+      const inferredPrevious =
+        event.previousTime || lastTimeByAction[event.action] || null;
+
+      // Next HR edit of same action used this event's new time as previous.
+      if (event.time) {
+        lastTimeByAction[event.action] = event.time;
+      }
+
+      changes.push({
+        date: record.date,
+        action: event.action,
+        actionLabel: getHrPunchActionLabel(event),
+        previousTime: inferredPrevious,
+        newTime: isRevoked ? null : event.time || null,
+        clockIn: record.clockIn || null,
+        clockOut: record.clockOut || null,
+        status: record.status || "",
+        changedAt: event.changedAt || record.updatedAt || null,
+        updatedByName:
+          event.byName
+            ? event.byEmployeeId
+              ? `${event.byName} (${event.byEmployeeId})`
+              : event.byName
+            : formatUpdatedByName(actor) ||
+              formatUpdatedByName(record.updatedBy) ||
+              "--",
+        updatedByRole:
+          event.byRole ||
+          actor?.role ||
+          record.updatedBy?.role ||
+          "",
+        reason: extractHrChangeReason(event.note, record.updateReason),
+      });
+    }
+
+    // Absent / status-only corrections may not create punchEvents.
+    if (
+      record.isManuallyUpdated &&
+      record.updateReason &&
+      events.length === 0
+    ) {
+      changes.push({
+        date: record.date,
+        action: "STATUS_UPDATE",
+        actionLabel:
+          record.status === "ABSENT" ? "Marked Absent" : "Manual Correction",
+        previousTime: null,
+        newTime: null,
+        clockIn: record.clockIn || null,
+        clockOut: record.clockOut || null,
+        status: record.status || "",
+        changedAt: record.updatedAt || null,
+        updatedByName: formatUpdatedByName(record.updatedBy) || "--",
+        updatedByRole: record.updatedBy?.role || "",
+        reason: record.updateReason || "--",
+      });
+    }
+  }
+
+  return changes.sort((left, right) => {
+    const leftTime = left.changedAt ? new Date(left.changedAt).getTime() : 0;
+    const rightTime = right.changedAt ? new Date(right.changedAt).getTime() : 0;
+    return rightTime - leftTime;
+  });
 };
 
 const normalizeBiometricCode = (value) => {
@@ -1552,13 +1743,37 @@ const getMyAttendanceDashboard = async (
   const todayAttendance = await Attendance.findOne({
     employee: userId,
     date: today,
-  }).lean();
+  })
+    .populate("punchEvents.by", "name employeeId role")
+    .populate("updatedBy", "name employeeId role")
+    .lean();
 
   const history = await Attendance.find({
     employee: userId,
   })
+    .populate("punchEvents.by", "name employeeId role")
+    .populate("updatedBy", "name employeeId role")
     .sort({ date: -1 })
-    .limit(15)
+    .limit(60)
+    .lean();
+
+  // Dedicated pull of HR corrections (may go beyond recent day history).
+  const hrChangeRecords = await Attendance.find({
+    employee: userId,
+    $or: [
+      { isManuallyUpdated: true },
+      { "punchEvents.source": "MANUAL" },
+      {
+        "punchEvents.note": {
+          $regex: /Manual update:|Clock Out revoked:/i,
+        },
+      },
+    ],
+  })
+    .populate("punchEvents.by", "name employeeId role")
+    .populate("updatedBy", "name employeeId role")
+    .sort({ updatedAt: -1 })
+    .limit(100)
     .lean();
 
   const biometricToday =
@@ -1589,6 +1804,7 @@ const getMyAttendanceDashboard = async (
         date: record.date,
         attendance: formatAttendanceSummary(record),
       })),
+      hrChangeHistory: buildHrChangeHistory(hrChangeRecords),
       overview: {
         status: todayAttendance?.status || "ABSENT",
         isPresent,
@@ -1957,12 +2173,23 @@ const manualUpdateAttendance = async (
   attendance.updateReason = reason;
   attendance.isManuallyUpdated = true;
 
+  const updater = await User.findById(updatedBy)
+    .select("name employeeId role")
+    .lean();
+  const updaterSnapshot = {
+    byName: updater?.name || "",
+    byEmployeeId: updater?.employeeId || "",
+    byRole: updater?.role || "",
+  };
+
   if (clockIn) {
     addPunchEvent(attendance, {
       action: "CLOCK_IN",
       source: "MANUAL",
       time: nextClockIn,
+      previousTime: existingClockIn,
       by: updatedBy,
+      ...updaterSnapshot,
       note: `Manual update: ${reason}`,
     });
   }
@@ -1972,7 +2199,9 @@ const manualUpdateAttendance = async (
       action: "CLOCK_OUT",
       source: "MANUAL",
       time: nextClockOut,
+      previousTime: existingClockOut,
       by: updatedBy,
+      ...updaterSnapshot,
       note: `Manual update: ${reason}`,
     });
   }
@@ -2034,11 +2263,19 @@ const revokeClockOut = async (attendanceId, reason, updatedBy) => {
   attendance.updateReason = reason.trim();
   attendance.isManuallyUpdated = true;
 
+  const updater = await User.findById(updatedBy)
+    .select("name employeeId role")
+    .lean();
+
   addPunchEvent(attendance, {
     action: "CLOCK_OUT",
     source: "MANUAL",
     time: previousClockOut,
+    previousTime: previousClockOut,
     by: updatedBy,
+    byName: updater?.name || "",
+    byEmployeeId: updater?.employeeId || "",
+    byRole: updater?.role || "",
     note: `Clock Out revoked: ${reason.trim()}`,
   });
 

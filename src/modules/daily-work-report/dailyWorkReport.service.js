@@ -2,7 +2,7 @@ const DailyWorkReport = require("./dailyWorkReport.model");
 const User = require("../user/user.model");
 
 const REVIEWER_ROLES = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL"];
-const REPORTING_MANAGER_ROLES = ["PROJECT_MANAGER", "TL"];
+const REPORTING_MANAGER_ROLES = ["PROJECT_MANAGER", "TL", "HR"];
 const WORK_STATUS_OPTIONS = ["COMPLETED", "IN_PROGRESS", "BLOCKED", "ON_HOLD"];
 const REVIEW_STATUS_OPTIONS = ["PENDING", "REVIEWED"];
 const MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024;
@@ -88,6 +88,21 @@ const validateAttachment = (attachment) => {
   };
 };
 
+const getDefaultHrManager = async (excludeUserId = "") => {
+  const filter = {
+    role: "HR",
+    isActive: true,
+  };
+
+  if (excludeUserId) {
+    filter._id = { $ne: excludeUserId };
+  }
+
+  return User.findOne(filter)
+    .select("name employeeId role")
+    .sort({ name: 1 });
+};
+
 const getMyPrefillDetails = async (userId) => {
   const user = await User.findById(userId)
     .select("name employeeId manager")
@@ -97,12 +112,17 @@ const getMyPrefillDetails = async (userId) => {
     throw createAppError("Employee profile not found.", 404);
   }
 
-  const managerRecord =
+  let managerRecord =
     user.manager &&
     typeof user.manager === "object" &&
     REPORTING_MANAGER_ROLES.includes(user.manager.role)
       ? user.manager
       : null;
+
+  // No assigned PM/TL/HR manager — default to an active HR user.
+  if (!managerRecord) {
+    managerRecord = await getDefaultHrManager(userId);
+  }
 
   return {
     employeeName: user.name || "",
@@ -246,9 +266,10 @@ const getAllDailyWorkReports = async (query, reviewer = null) => {
 
   const filter = {};
 
-  // TL should only see reports where employee selected that TL as reporting manager.
+  // TL sees only reports where they were chosen as reporting manager.
+  // HR / PROJECT_MANAGER / SUPER_ADMIN can review the full list.
   if (reviewer?.role === "TL") {
-    filter.reportingManager = reviewer.id;
+    filter.reportingManager = String(reviewer.id || "");
   }
 
   if (workStatus) {

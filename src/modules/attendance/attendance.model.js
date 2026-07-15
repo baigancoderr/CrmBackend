@@ -26,6 +26,25 @@ const punchEventSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    previousTime: {
+      type: Date,
+      default: null,
+    },
+    byName: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    byEmployeeId: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    byRole: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     changedAt: {
       type: Date,
       default: Date.now,

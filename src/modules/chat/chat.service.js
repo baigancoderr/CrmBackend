@@ -425,19 +425,24 @@ const createSystemMessage = async (
     await conversation.save();
   }
 
-  if (io) {
-    io.to(`conversation:${conversationId}`).emit(
-      "message:new",
-      {
+  if (io && conversation) {
+    // Same as sendMessage: only user rooms (no conversation-room duplicate)
+    conversation.members.forEach((member) => {
+      if (member.leftAt) {
+        return;
+      }
+
+      const memberId = member.user.toString();
+      io.to(`user:${memberId}`).emit("message:new", {
         conversationId,
         message: savedMessage,
-      }
-    );
+      });
+    });
   }
 
-  await incrementMetric("chat_system_message_created", {
+  incrementMetric("chat_system_message_created", {
     conversationId: conversationId.toString(),
-  });
+  }).catch(() => undefined);
 
   return savedMessage;
 };
@@ -1093,7 +1098,7 @@ const sendMessage = async (
     const parentMessage = await Message.findOne({
       _id: replyTo,
       conversation: conversationId,
-    });
+    }).select("_id");
 
     if (!parentMessage) {
       throw new Error("Reply message not found");
@@ -1130,28 +1135,21 @@ const sendMessage = async (
     normalizedContent,
     payload.fileMeta
   );
+  const sentAt = message.createdAt || new Date();
 
-  await Conversation.findByIdAndUpdate(conversationId, {
-    lastMessage: {
-      text: previewText,
-      sender: user.id,
-      sentAt: message.createdAt,
-    },
-  });
+  // One conversation write — skip redundant find + update + find + save
+  conversation.lastMessage = {
+    text: previewText,
+    sender: user.id,
+    sentAt,
+  };
 
-  const updatedConversation = await Conversation.findById(
-    conversationId
-  );
-  const sentAt = new Date();
-
-  for (const member of updatedConversation.members) {
+  for (const member of conversation.members) {
     if (member.leftAt) {
       continue;
     }
 
-    if (
-      member.user.toString() === user.id.toString()
-    ) {
+    if (member.user.toString() === user.id.toString()) {
       member.lastReadAt = sentAt;
       member.unreadCount = 0;
       continue;
@@ -1160,14 +1158,14 @@ const sendMessage = async (
     member.unreadCount = (member.unreadCount || 0) + 1;
   }
 
-  await updatedConversation.save();
+  await conversation.save();
 
-  const populatedMessage = await populateMessage(
+  const savedMessage = await populateMessage(
     Message.findById(message._id)
   );
 
-  const savedMessage = await populatedMessage;
-
+  // Emit once per online member via user room (everyone joins user: on connect).
+  // Avoid also emitting to conversation room — causes duplicate client handlers.
   if (io) {
     activeMemberIds.forEach((memberId) => {
       io.to(`user:${memberId}`).emit("message:new", {
@@ -1175,20 +1173,13 @@ const sendMessage = async (
         message: savedMessage,
       });
     });
-
-    io.to(`conversation:${conversationId}`).emit(
-      "message:new",
-      {
-        conversationId,
-        message: savedMessage,
-      }
-    );
   }
 
-  await incrementMetric("chat_message_sent", {
+  // Do not block send response on metrics
+  incrementMetric("chat_message_sent", {
     senderId: user.id.toString(),
     type,
-  });
+  }).catch(() => undefined);
 
   return savedMessage;
 };
