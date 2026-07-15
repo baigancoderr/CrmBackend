@@ -133,6 +133,29 @@ const attendanceSchema = new mongoose.Schema(
       default: 0,
     },
 
+    // All biometric/manual punch timestamps for the day (counting source).
+    punches: {
+      type: [Date],
+      default: [],
+    },
+
+    // Completed break pairs derived from middle punches (display/count only).
+    breaks: {
+      type: [
+        {
+          start: { type: Date, required: true },
+          end: { type: Date, required: true },
+          minutes: { type: Number, default: 0 },
+        },
+      ],
+      default: [],
+    },
+
+    totalBreakMinutes: {
+      type: Number,
+      default: 0,
+    },
+
     status: {
       type: String,
       enum: [
