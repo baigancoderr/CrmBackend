@@ -138,6 +138,7 @@ const calculateAttendanceMetrics = (
   options = {}
 ) => {
   const {
+    officeStart,
     officeEnd,
     lateGraceEnd,
     halfDayCutoffTime,
@@ -165,9 +166,12 @@ const calculateAttendanceMetrics = (
   }
 
   if (clockOutDate) {
+    // Working clock starts from office start time if employee checks in early.
+    const effectiveWorkStart =
+      clockInDate < officeStart ? officeStart : clockInDate;
     workingMinutes = Math.max(
-      0,
-      Math.floor((clockOutDate - clockInDate) / 60000) -
+      Math.max0,
+      Math.floor((clockOutDate - effectiveWorkStart, 0) / 60000) -
         totalBreakMinutes
     );
 
