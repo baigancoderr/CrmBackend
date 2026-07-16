@@ -1,4 +1,27 @@
+const ROLE_ALIASES = {
+  PM: "PROJECT_MANAGER",
+  "PROJECT MANAGER": "PROJECT_MANAGER",
+  TEAM_LEADER: "TL",
+  "TEAM LEADER": "TL",
+};
+
+const normalizeRole = (role) => {
+  const normalized = String(role || "")
+    .trim()
+    .toUpperCase();
+
+  if (!normalized) {
+    return "";
+  }
+
+  return ROLE_ALIASES[normalized] || normalized;
+};
+
 const roleMiddleware = (...allowedRoles) => {
+  const normalizedAllowedRoles = allowedRoles
+    .map((role) => normalizeRole(role))
+    .filter(Boolean);
+
   return (req,res,next) => {
     try {
       if (!req.user) {
@@ -8,10 +31,10 @@ const roleMiddleware = (...allowedRoles) => {
         });
       }
 
-      if (!allowedRoles.includes(
-          req.user.role
-        )
-      ) {
+      const normalizedUserRole = normalizeRole(req.user.role);
+      req.user.role = normalizedUserRole;
+
+      if (!normalizedAllowedRoles.includes(normalizedUserRole)) {
         return res.status(403).json({
           success: false,
           message:"Access Denied",
