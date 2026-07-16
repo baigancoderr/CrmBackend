@@ -50,6 +50,12 @@ const leaveBalanceSchema = new mongoose.Schema(
       min: 0,
     },
 
+    extraLeaves: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
     year: {
       type: Number,
       required: true,

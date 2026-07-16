@@ -1,35 +1,125 @@
 require("dotenv").config();
 
+const http = require("http");
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
+const { Server } = require("socket.io");
+const { createAdapter } = require("@socket.io/redis-adapter");
 
 const connectDB = require("./src/config/db");
-const { connectRedis } = require("./src/config/redis");
+const {
+  connectRedis,
+  redisClient,
+} = require("./src/config/redis");
 
 const routes = require("./src/routes");
+const {
+  initializeChatSocket,
+} = require("./src/modules/chat/chat.socket");
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST", "PATCH", "DELETE"],
+  },
+});
+
+const PORT = process.env.PORT || 8080;
 const isBiometricSyncEnabled =
-  process.env.ETIME_SYNC_ENABLED === "true";
+  process.env.ETIME_SYNC_ENABLED !== "false";
+
+const defaultAllowedOrigins = [
+  "https://newofficefrontend.fastsolution.cloud",
+  "https://newofficebackend.fastsolution.cloud",
+  "https://manageteam.fastsolution.cloud",
+  "https://manageteam-api.fastsolution.cloud",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "http://localhost:8080",
+  "http://127.0.0.1:8080",
+];
+
+const envAllowedOrigins = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = [
+  ...new Set([...defaultAllowedOrigins, ...envAllowedOrigins]),
+];
+
+const isLocalDevOrigin = (origin) =>
+  /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(
+    origin
+  );
+
+const isProduction = process.env.NODE_ENV === "production";
+
+const corsOptions = {
+  origin: isProduction
+    ? (origin, callback) => {
+        if (
+          !origin ||
+          allowedOrigins.includes(origin) ||
+          isLocalDevOrigin(origin)
+        ) {
+          callback(null, true);
+          return;
+        }
+
+        callback(null, false);
+      }
+    : true,
+  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+  credentials: false,
+  optionsSuccessStatus: 204,
+};
 
 // Middlewares
-app.use(cors());
-app.use(express.json());
+app.use(cors(corsOptions));
+app.options("/{*splat}", cors(corsOptions));
+// Daily work report attachments are sent as base64 JSON (up to 5 MB file).
+app.use(express.json({ limit: "8mb" }));
 app.use(cookieParser());
+
+// Public disk uploads. Mount /api/uploads before /api routes so reverse
+// proxies that only forward /api still serve chat/employee/notes files.
+const uploadsPath = path.join(__dirname, "uploads");
+app.use("/uploads", express.static(uploadsPath));
+app.use("/api/uploads", express.static(uploadsPath));
 
 // Routes
 app.use("/api", routes);
-// const express = require("express");
-const path = require("path");
 
-app.use("/uploads",express.static(path.join(__dirname, "uploads")));
+// Global Error Handler
+const errorMiddleware = require("./src/middleware/error.middleware");
+app.use(errorMiddleware);
+
 
 (async () => {
   try {
-    await connectDB();
+    const dbConnected = await connectDB();
+    if (!dbConnected) {
+      console.warn(
+        "The server will continue without MongoDB. Database-backed routes may fail until the connection is restored."
+      );
+    }
+
     await connectRedis();
+    const socketPubClient = redisClient.duplicate();
+    const socketSubClient = redisClient.duplicate();
+    await Promise.all([
+      socketPubClient.connect(),
+      socketSubClient.connect(),
+    ]);
+    io.adapter(
+      createAdapter(socketPubClient, socketSubClient)
+    );
 
     const {
       ensureDailyAttendanceRecords,
@@ -96,7 +186,7 @@ app.use("/uploads",express.static(path.join(__dirname, "uploads")));
       );
     } else if (!isBiometricSyncEnabled) {
       console.warn(
-        "Biometric sync is turned off (ETIME_SYNC_ENABLED != true). Manual attendance mode is active."
+        "Biometric sync is turned off (ETIME_SYNC_ENABLED=false). Manual attendance mode is active."
       );
     } else {
       console.warn(
@@ -104,8 +194,11 @@ app.use("/uploads",express.static(path.join(__dirname, "uploads")));
       );
     }
 
-    app.listen(PORT, () => {
+    initializeChatSocket(io);
+
+    server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
+      console.log("Chat socket initialized");
     });
   } catch (error) {
     console.error(error);

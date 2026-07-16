@@ -35,6 +35,18 @@ router.get(
 );
 
 router.get(
+  "/team-list",
+  authMiddleware,
+  userController.getVisibleTeamMembers
+);
+
+router.get(
+  "/birthdays",
+  authMiddleware,
+  userController.getUpcomingBirthdays
+);
+
+router.get(
   "/dashboard-counts",
   authMiddleware,
   roleMiddleware(...ADMIN_ROLES),

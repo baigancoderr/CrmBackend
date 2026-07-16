@@ -5,15 +5,15 @@ const {
 const {
   normalizeEmpCode,
 } = require("../../utils/biometricEmpCode");
+const {
+  getTodayDateKey,
+  parseBiometricRowDateKey,
+} = require("../../utils/istDateTime");
 
 const isBiometricFetchEnabled = () =>
-  process.env.ETIME_FETCH_ENABLED === "true";
+  process.env.ETIME_FETCH_ENABLED !== "false";
 
-const getLocalDateKey = () => {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-  }).format(new Date());
-};
+const getLocalDateKey = () => getTodayDateKey();
 
 const toEtimeDate = (dateKey) => {
   const [year, month, day] = dateKey.split("-");
@@ -218,9 +218,82 @@ const fetchBiometricInOutRecords = async (dateKey) => {
   }
 };
 
+const fetchBiometricInOutForRange = async (fromDateKey, toDateKey) => {
+  const fromDate = fromDateKey || getLocalDateKey();
+  const toDate = toDateKey || fromDate;
+
+  if (!isBiometricFetchEnabled()) {
+    return {
+      fromDate,
+      toDate,
+      recordsByDate: {},
+      total: 0,
+      error:
+        "Biometric fetch is disabled. Manual attendance mode is active.",
+    };
+  }
+
+  const employees = await User.find({
+    isActive: true,
+  })
+    .select(
+      "employeeId biometricEmpCode name designation department profilePhoto"
+    )
+    .lean();
+
+  const employeeLookup = buildEmployeeLookup(employees);
+  const etimeFromDate = toEtimeDate(fromDate);
+  const etimeToDate = toEtimeDate(toDate);
+
+  try {
+    const apiResponse = await downloadInOutPunchData(
+      "ALL",
+      etimeFromDate,
+      etimeToDate
+    );
+
+    const recordsByDate = {};
+
+    (apiResponse.InOutPunchData || []).forEach((row) => {
+      const empcode = normalizeEmpCode(row.Empcode);
+      const matchedEmployee = employeeLookup.get(empcode);
+      const rowDateKey = parseBiometricRowDateKey(row, fromDate);
+      const mappedRow = mapInOutRow(row, matchedEmployee);
+
+      if (!recordsByDate[rowDateKey]) {
+        recordsByDate[rowDateKey] = [];
+      }
+
+      recordsByDate[rowDateKey].push(mappedRow);
+    });
+
+    const total = Object.values(recordsByDate).reduce(
+      (sum, records) => sum + records.length,
+      0
+    );
+
+    return {
+      fromDate,
+      toDate,
+      recordsByDate,
+      total,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      fromDate,
+      toDate,
+      recordsByDate: {},
+      total: 0,
+      error: error.message,
+    };
+  }
+};
+
 module.exports = {
   fetchBiometricInOutRecords,
   fetchBiometricInOutForUser,
+  fetchBiometricInOutForRange,
   getUserBiometricEmpCode,
   toEtimeDate,
   getLocalDateKey,

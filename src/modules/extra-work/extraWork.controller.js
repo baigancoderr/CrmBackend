@@ -9,7 +9,8 @@ const requestExtraWork = async (req, res) => {
 
     return res.status(201).json(result);
   } catch (error) {
-    return res.status(400).json({
+    const statusCode = error.statusCode || 400;
+    return res.status(statusCode).json({
       success: false,
       message: error.message,
     });
@@ -26,7 +27,8 @@ const approveExtraWork = async (req, res) => {
 
     return res.status(200).json(result);
   } catch (error) {
-    return res.status(400).json({
+    const statusCode = error.statusCode || 400;
+    return res.status(statusCode).json({
       success: false,
       message: error.message,
     });
@@ -41,7 +43,8 @@ const extraClockIn = async (req, res) => {
 
     return res.status(200).json(result);
   } catch (error) {
-    return res.status(400).json({
+    const statusCode = error.statusCode || 400;
+    return res.status(statusCode).json({
       success: false,
       message: error.message,
     });
@@ -56,7 +59,8 @@ const extraClockOut = async (req, res) => {
 
     return res.status(200).json(result);
   } catch (error) {
-    return res.status(400).json({
+    const statusCode = error.statusCode || 400;
+    return res.status(statusCode).json({
       success: false,
       message: error.message,
     });
@@ -71,7 +75,8 @@ const getMyRequestStatus = async (req, res) => {
 
     return res.status(200).json(result);
   } catch (error) {
-    return res.status(400).json({
+    const statusCode = error.statusCode || 400;
+    return res.status(statusCode).json({
       success: false,
       message: error.message,
     });
@@ -86,7 +91,8 @@ const getMyActivity = async (req, res) => {
 
     return res.status(200).json(result);
   } catch (error) {
-    return res.status(400).json({
+    const statusCode = error.statusCode || 400;
+    return res.status(statusCode).json({
       success: false,
       message: error.message,
     });
@@ -103,7 +109,8 @@ const getAllRequests = async (req, res) => {
 
     return res.status(200).json(result);
   } catch (error) {
-    return res.status(400).json({
+    const statusCode = error.statusCode || 400;
+    return res.status(statusCode).json({
       success: false,
       message: error.message,
     });

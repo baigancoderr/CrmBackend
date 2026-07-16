@@ -26,6 +26,29 @@ const punchEventSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    previousTime: {
+      type: Date,
+      default: null,
+    },
+    byName: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    byEmployeeId: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    byRole: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    changedAt: {
+      type: Date,
+      default: Date.now,
+    },
   },
   { _id: false }
 );
@@ -110,12 +133,36 @@ const attendanceSchema = new mongoose.Schema(
       default: 0,
     },
 
+    // All biometric/manual punch timestamps for the day (counting source).
+    punches: {
+      type: [Date],
+      default: [],
+    },
+
+    // Completed break pairs derived from middle punches (display/count only).
+    breaks: {
+      type: [
+        {
+          start: { type: Date, required: true },
+          end: { type: Date, required: true },
+          minutes: { type: Number, default: 0 },
+        },
+      ],
+      default: [],
+    },
+
+    totalBreakMinutes: {
+      type: Number,
+      default: 0,
+    },
+
     status: {
       type: String,
       enum: [
         "PRESENT",
         "LATE",
         "HALF_DAY",
+        "EARLY_LEAVE",
         "ABSENT",
         "WEEK_OFF",
         "LEAVE",

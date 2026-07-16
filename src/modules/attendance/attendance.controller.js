@@ -198,11 +198,13 @@ const getMonthlyTeamSheet = async (req, res) => {
   try {
     const month = Number(req.query.month);
     const year = Number(req.query.year);
+    const employeeId = req.query.employeeId;
 
     const result =
       await attendanceService.getMonthlyTeamSheet(
         month,
-        year
+        year,
+        employeeId
       );
 
     return res.status(200).json(result);
@@ -219,6 +221,23 @@ const manualUpdateAttendance = async (req, res) => {
     const result = await attendanceService.manualUpdateAttendance(
       req.params.id,
       req.body,
+      req.user.id
+    );
+
+    return res.status(200).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const revokeClockOut = async (req, res) => {
+  try {
+    const result = await attendanceService.revokeClockOut(
+      req.params.id,
+      req.body.reason,
       req.user.id
     );
 
@@ -276,4 +295,5 @@ module.exports = {
   getEmployeeAttendance,
   getMonthlyTeamSheet,
   manualUpdateAttendance,
+  revokeClockOut,
 };

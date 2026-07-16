@@ -1,5 +1,6 @@
 const Attendance = require("./attendance.model");
 const User = require("../user/user.model");
+const mongoose = require("mongoose");
 const ProcessedBiometricPunch = require("../biometric/processedPunch.model");
 const {
   getBiometricSyncStatus,
@@ -7,45 +8,30 @@ const {
 const {
   fetchBiometricInOutRecords,
   fetchBiometricInOutForUser,
+  fetchBiometricInOutForRange,
 } = require("../biometric/biometricInOut.service");
+const {
+  getTodayDateKey,
+  getDateKeyFromDate,
+  parseIstTimeOnDate,
+  parseBiometricPunchDateString,
+  formatIstTimePart,
+  isIstWeekendNow,
+  isIstWeekendDateKey,
+  getIstDayBounds,
+  getIstWeekdayShort,
+} = require("../../utils/istDateTime");
+const {
+  derivePunchTimeline,
+  parseDurationToMinutes,
+} = require("./punchTimeline");
 
-const getTodayDate = () => {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-  }).format(new Date());
-};
+const getTodayDate = () => getTodayDateKey();
 
-const parseBiometricPunchDate = (punchDateString) => {
-  if (!punchDateString) {
-    return null;
-  }
+const parseBiometricPunchDate = (punchDateString) =>
+  parseBiometricPunchDateString(punchDateString);
 
-  const [datePart, timePart] = punchDateString.trim().split(" ");
-
-  if (!datePart || !timePart) {
-    return null;
-  }
-
-  const [day, month, year] = datePart.split("/");
-  const [hours, minutes, seconds] = timePart.split(":");
-
-  return new Date(
-    Number(year),
-    Number(month) - 1,
-    Number(day),
-    Number(hours),
-    Number(minutes),
-    Number(seconds || 0)
-  );
-};
-
-const getDateKey = (dateValue) => {
-  const year = dateValue.getFullYear();
-  const month = String(dateValue.getMonth() + 1).padStart(2, "0");
-  const day = String(dateValue.getDate()).padStart(2, "0");
-
-  return `${year}-${month}-${day}`;
-};
+const getDateKey = (dateValue) => getDateKeyFromDate(dateValue);
 
 const getAttendanceEmployeeSnapshot = (user) => ({
   employeeId: user?.employeeId || "",
@@ -110,16 +96,37 @@ const ensureDailyAttendanceRecords = async (dateKey) => {
   };
 };
 
+// Attendance status rules:
+// Check-in: 10:00–10:10 = Present, after 10:10 = Late
+// Check-out: before 16:00 = Half Day, 16:00–18:59 = Early Leave, 19:00+ = Normal checkout
+const ATTENDANCE_RULES = {
+  LATE_GRACE_MINUTES: 10,
+  HALF_DAY_CHECKOUT_TIME: "16:00",
+};
+
 const getOfficeTimes = (user, dateKey) => {
   const startTime = user?.officeTiming?.startTime || "10:00";
   const endTime = user?.officeTiming?.endTime || "19:00";
+  const halfDayCutoff =
+    user?.officeTiming?.halfDayCutoff ||
+    ATTENDANCE_RULES.HALF_DAY_CHECKOUT_TIME;
 
-  const officeStart = new Date(`${dateKey}T${startTime}:00`);
-  const officeEnd = new Date(`${dateKey}T${endTime}:00`);
+  const officeStart = parseIstTimeOnDate(dateKey, `${startTime}:00`);
+  const officeEnd = parseIstTimeOnDate(dateKey, `${endTime}:00`);
+  const lateGraceEnd = new Date(
+    officeStart.getTime() +
+      ATTENDANCE_RULES.LATE_GRACE_MINUTES * 60000
+  );
+  const halfDayCutoffTime = parseIstTimeOnDate(
+    dateKey,
+    `${halfDayCutoff}:00`
+  );
 
   return {
     officeStart,
     officeEnd,
+    lateGraceEnd,
+    halfDayCutoffTime,
   };
 };
 
@@ -127,12 +134,21 @@ const calculateAttendanceMetrics = (
   clockInDate,
   clockOutDate,
   user,
-  dateKey
+  dateKey,
+  options = {}
 ) => {
-  const { officeStart, officeEnd } = getOfficeTimes(
-    user,
-    dateKey
+  const {
+    officeEnd,
+    lateGraceEnd,
+    halfDayCutoffTime,
+  } = getOfficeTimes(user, dateKey);
+
+  const totalBreakMinutes = Math.max(
+    0,
+    Number(options.totalBreakMinutes) || 0
   );
+  // Mid-day break/out punches must not flip status to Half Day / Early Leave.
+  const applyCheckoutStatus = options.applyCheckoutStatus !== false;
 
   let lateMinutes = 0;
   let overtimeMinutes = 0;
@@ -140,32 +156,41 @@ const calculateAttendanceMetrics = (
   let workingMinutes = 0;
   let status = "PRESENT";
 
-  if (clockInDate > officeStart) {
+  // Check-in: Present within grace window, Late after grace end time.
+  if (clockInDate > lateGraceEnd) {
     lateMinutes = Math.floor(
-      (clockInDate - officeStart) / 60000
+      (clockInDate - lateGraceEnd) / 60000
     );
     status = "LATE";
   }
 
   if (clockOutDate) {
-    workingMinutes = Math.floor(
-      (clockOutDate - clockInDate) / 60000
+    workingMinutes = Math.max(
+      0,
+      Math.floor((clockOutDate - clockInDate) / 60000) -
+        totalBreakMinutes
     );
 
-    if (clockOutDate > officeEnd) {
-      overtimeMinutes = Math.floor(
-        (clockOutDate - officeEnd) / 60000
-      );
-    }
+    // Provisional mid-day outs (break) should not create shortfall / early-leave metrics.
+    if (applyCheckoutStatus) {
+      if (clockOutDate > officeEnd) {
+        overtimeMinutes = Math.floor(
+          (clockOutDate - officeEnd) / 60000
+        );
+      }
 
-    if (clockOutDate < officeEnd) {
-      shortfallMinutes = Math.floor(
-        (officeEnd - clockOutDate) / 60000
-      );
-    }
+      if (clockOutDate < officeEnd) {
+        shortfallMinutes = Math.floor(
+          (officeEnd - clockOutDate) / 60000
+        );
+      }
 
-    if (workingMinutes < 240) {
-      status = "HALF_DAY";
+      if (clockOutDate < halfDayCutoffTime) {
+        status = "HALF_DAY";
+      } else if (clockOutDate < officeEnd) {
+        status = "EARLY_LEAVE";
+      }
+      // 19:00 or later keeps Present/Late from check-in
     }
   }
 
@@ -177,6 +202,172 @@ const calculateAttendanceMetrics = (
     workingMinutes,
     status,
   };
+};
+
+const shouldApplyCheckoutStatus = (dateKey, officeEnd) => {
+  const today = getTodayDateKey();
+
+  if (dateKey < today) {
+    return true;
+  }
+
+  if (dateKey > today) {
+    return false;
+  }
+
+  return new Date() >= officeEnd;
+};
+
+const resolveShiftState = (attendance, user, dateKey) => {
+  if (!attendance?.clockIn) {
+    return "NOT_STARTED";
+  }
+
+  const punchCount =
+    Array.isArray(attendance.punches) && attendance.punches.length > 0
+      ? attendance.punches.length
+      : attendance.clockOut
+        ? 2
+        : 1;
+
+  // Odd = inside office; even = out (break or day end).
+  if (punchCount % 2 === 1) {
+    return "ON_SHIFT";
+  }
+
+  const { officeEnd } = getOfficeTimes(user, dateKey);
+  const today = getTodayDateKey();
+
+  if (dateKey < today || new Date() >= officeEnd) {
+    return "COMPLETED";
+  }
+
+  return "ON_BREAK";
+};
+
+const getExistingPunchTimes = (attendance) => {
+  if (!attendance) {
+    return [];
+  }
+
+  if (Array.isArray(attendance.punches) && attendance.punches.length > 0) {
+    return attendance.punches;
+  }
+
+  const legacy = [];
+
+  if (attendance.clockIn) {
+    legacy.push(attendance.clockIn);
+  }
+
+  if (attendance.clockOut) {
+    legacy.push(attendance.clockOut);
+  }
+
+  return legacy;
+};
+
+const applyTimelineMetrics = (
+  attendance,
+  timeline,
+  user,
+  dateKey,
+  source = "BIOMETRIC",
+  eventBy = null
+) => {
+  const previousClockIn = attendance.clockIn
+    ? new Date(attendance.clockIn)
+    : null;
+  const previousClockOut = attendance.clockOut
+    ? new Date(attendance.clockOut)
+    : null;
+
+  attendance.punches = timeline.punches;
+  attendance.breaks = timeline.breaks;
+  attendance.totalBreakMinutes = timeline.totalBreakMinutes;
+  attendance.clockIn = timeline.clockIn;
+  attendance.clockOut = timeline.clockOut;
+
+  if (timeline.clockIn) {
+    attendance.clockInSource = source;
+  }
+
+  if (timeline.clockOut) {
+    attendance.clockOutSource = source;
+  }
+
+  // Keep HR/audit trail light: only first in + latest out events.
+  if (
+    timeline.clockIn &&
+    (!previousClockIn ||
+      timeline.clockIn.getTime() !== previousClockIn.getTime())
+  ) {
+    addPunchEvent(attendance, {
+      action: "CLOCK_IN",
+      source,
+      time: timeline.clockIn,
+      by: eventBy,
+      note:
+        source === "BIOMETRIC"
+          ? "Biometric clock in"
+          : "Manual clock in by employee",
+    });
+  }
+
+  if (
+    timeline.clockOut &&
+    (!previousClockOut ||
+      timeline.clockOut.getTime() !== previousClockOut.getTime())
+  ) {
+    addPunchEvent(attendance, {
+      action: "CLOCK_OUT",
+      source,
+      time: timeline.clockOut,
+      by: eventBy,
+      note:
+        source === "BIOMETRIC"
+          ? "Biometric clock out"
+          : "Manual clock out by employee",
+    });
+  }
+
+  const { officeEnd } = getOfficeTimes(user, dateKey);
+  const applyCheckoutStatus =
+    Boolean(timeline.clockOut) &&
+    shouldApplyCheckoutStatus(dateKey, officeEnd);
+
+  const metrics = calculateAttendanceMetrics(
+    timeline.clockIn,
+    timeline.clockOut,
+    user,
+    dateKey,
+    {
+      totalBreakMinutes: timeline.totalBreakMinutes,
+      applyCheckoutStatus,
+    }
+  );
+
+  attendance.lateMinutes = metrics.lateMinutes;
+  attendance.overtimeMinutes = metrics.overtimeMinutes;
+  attendance.shortfallMinutes = metrics.shortfallMinutes;
+  attendance.earlyOutMinutes = metrics.earlyOutMinutes;
+  attendance.workingMinutes = metrics.workingMinutes;
+  attendance.status = metrics.status;
+
+  // While still on shift (odd punches), store net worked so far from last punch.
+  if (
+    !timeline.clockOut &&
+    timeline.clockIn &&
+    timeline.punches.length > 0
+  ) {
+    const lastPunch = timeline.punches[timeline.punches.length - 1];
+    attendance.workingMinutes = Math.max(
+      0,
+      Math.floor(
+        (lastPunch.getTime() - timeline.clockIn.getTime()) / 60000
+      ) - timeline.totalBreakMinutes
+    );
+  }
 };
 
 const addPunchEvent = (attendance, event) => {
@@ -198,12 +389,26 @@ const addPunchEvent = (attendance, event) => {
   });
 
   if (!alreadyExists) {
+    let byId = null;
+    if (event.by) {
+      try {
+        byId = new mongoose.Types.ObjectId(String(event.by));
+      } catch (error) {
+        byId = null;
+      }
+    }
+
     attendance.punchEvents.push({
       action: event.action,
       source: event.source,
       time: eventTime,
-      by: event.by || null,
+      by: byId,
+      byName: event.byName || "",
+      byEmployeeId: event.byEmployeeId || "",
+      byRole: event.byRole || "",
       note: event.note || "",
+      previousTime: event.previousTime || null,
+      changedAt: event.changedAt || new Date(),
     });
   }
 };
@@ -228,85 +433,34 @@ const applyBiometricPunch = async (
     date: dateKey,
   });
 
-  if (!attendance) {
-    const metrics = calculateAttendanceMetrics(
-      punchDateTime,
-      null,
-      user,
-      dateKey
-    );
-
-    attendance = await Attendance.create({
-      employee: userId,
-      date: dateKey,
-      ...getAttendanceEmployeeSnapshot(user),
-      clockIn: punchDateTime,
-      clockInSource: "BIOMETRIC",
-      lateMinutes: metrics.lateMinutes,
-      earlyOutMinutes: metrics.earlyOutMinutes,
-      status: metrics.status,
-      punchEvents: [
-        {
-          action: "CLOCK_IN",
-          source: "BIOMETRIC",
-          time: punchDateTime,
-          by: null,
-          note: "Biometric clock in",
-        },
-      ],
-    });
-
+  // HR manually marked absent — do not overwrite with biometric punches.
+  if (attendance?.isManuallyUpdated && attendance.status === "ABSENT") {
     return attendance;
   }
 
-  let clockIn = attendance.clockIn || punchDateTime;
-  let clockOut = attendance.clockOut || null;
+  const existingPunches = getExistingPunchTimes(attendance);
+  const timeline = derivePunchTimeline([
+    ...existingPunches,
+    punchDateTime,
+  ]);
 
-  if (!attendance.clockIn || punchDateTime < attendance.clockIn) {
-    clockIn = punchDateTime;
-    attendance.clockIn = clockIn;
-    attendance.clockInSource = "BIOMETRIC";
-    addPunchEvent(attendance, {
-      action: "CLOCK_IN",
-      source: "BIOMETRIC",
-      time: punchDateTime,
-      by: null,
-      note: "Biometric clock in synced",
+  if (!attendance) {
+    attendance = new Attendance({
+      employee: userId,
+      date: dateKey,
+      ...getAttendanceEmployeeSnapshot(user),
+      punchEvents: [],
     });
   }
 
-  if (
-    punchDateTime > clockIn &&
-    (
-      !attendance.clockOut ||
-      punchDateTime > attendance.clockOut
-    )
-  ) {
-    clockOut = punchDateTime;
-    attendance.clockOut = clockOut;
-    attendance.clockOutSource = "BIOMETRIC";
-    addPunchEvent(attendance, {
-      action: "CLOCK_OUT",
-      source: "BIOMETRIC",
-      time: punchDateTime,
-      by: null,
-      note: "Biometric clock out synced",
-    });
-  }
-
-  const metrics = calculateAttendanceMetrics(
-    attendance.clockIn,
-    attendance.clockOut,
+  applyTimelineMetrics(
+    attendance,
+    timeline,
     user,
-    dateKey
+    dateKey,
+    "BIOMETRIC"
   );
 
-  attendance.lateMinutes = metrics.lateMinutes;
-  attendance.overtimeMinutes = metrics.overtimeMinutes;
-  attendance.shortfallMinutes = metrics.shortfallMinutes;
-  attendance.earlyOutMinutes = metrics.earlyOutMinutes;
-  attendance.workingMinutes = metrics.workingMinutes;
-  attendance.status = metrics.status;
   attendance.employeeId = user.employeeId || attendance.employeeId;
   attendance.employeeName = user.name || attendance.employeeName;
   attendance.biometricEmpCode =
@@ -324,9 +478,7 @@ const clockIn = async (userId) => {
     throw new Error("User not found");
   }
 
-  const day = new Date().getDay();
-
-  if (day === 0 || day === 6) {
+  if (isIstWeekendNow()) {
     throw new Error(
       "Weekend attendance not allowed"
     );
@@ -347,21 +499,21 @@ const clockIn = async (userId) => {
   }
 
   const now = new Date();
-  const metrics = calculateAttendanceMetrics(
-    now,
-    null,
-    user,
-    today
-  );
+  const timeline = derivePunchTimeline([now]);
 
   let attendance;
 
   if (existingAttendance) {
-    existingAttendance.clockIn = now;
-    existingAttendance.clockInSource = "MANUAL";
-    existingAttendance.lateMinutes = metrics.lateMinutes;
-    existingAttendance.earlyOutMinutes = metrics.earlyOutMinutes;
-    existingAttendance.status = metrics.status;
+    existingAttendance.punchEvents =
+      existingAttendance.punchEvents || [];
+    applyTimelineMetrics(
+      existingAttendance,
+      timeline,
+      user,
+      today,
+      "MANUAL",
+      userId
+    );
     existingAttendance.employeeId =
       user.employeeId || existingAttendance.employeeId;
     existingAttendance.employeeName =
@@ -369,37 +521,27 @@ const clockIn = async (userId) => {
     existingAttendance.biometricEmpCode =
       user.biometricEmpCode ||
       existingAttendance.biometricEmpCode;
-    addPunchEvent(existingAttendance, {
-      action: "CLOCK_IN",
-      source: "MANUAL",
-      time: now,
-      by: userId,
-      note: "Manual clock in by employee",
-    });
 
     await existingAttendance.save();
     attendance = existingAttendance;
   } else {
-    attendance =
-      await Attendance.create({
-        employee: userId,
-        date: today,
-        ...getAttendanceEmployeeSnapshot(user),
-        clockIn: now,
-        clockInSource: "MANUAL",
-        lateMinutes: metrics.lateMinutes,
-        earlyOutMinutes: metrics.earlyOutMinutes,
-        status: metrics.status,
-        punchEvents: [
-          {
-            action: "CLOCK_IN",
-            source: "MANUAL",
-            time: now,
-            by: userId,
-            note: "Manual clock in by employee",
-          },
-        ],
-      });
+    attendance = new Attendance({
+      employee: userId,
+      date: today,
+      ...getAttendanceEmployeeSnapshot(user),
+      punchEvents: [],
+    });
+
+    applyTimelineMetrics(
+      attendance,
+      timeline,
+      user,
+      today,
+      "MANUAL",
+      userId
+    );
+
+    await attendance.save();
   }
 
   return {
@@ -437,36 +579,33 @@ const clockOut = async (userId) => {
     );
   }
 
-  if (attendance.clockOut) {
+  const shiftState = resolveShiftState(
+    attendance,
+    user,
+    today
+  );
+
+  if (shiftState === "COMPLETED" || shiftState === "ON_BREAK") {
     throw new Error(
       "Already clocked out"
     );
   }
 
   const now = new Date();
-
-  attendance.clockOut = now;
-  attendance.clockOutSource = "MANUAL";
-  addPunchEvent(attendance, {
-    action: "CLOCK_OUT",
-    source: "MANUAL",
-    time: now,
-    by: userId,
-    note: "Manual clock out by employee",
-  });
-
-  const metrics = calculateAttendanceMetrics(
-    attendance.clockIn,
+  const timeline = derivePunchTimeline([
+    ...getExistingPunchTimes(attendance),
     now,
+  ]);
+
+  applyTimelineMetrics(
+    attendance,
+    timeline,
     user,
-    today
+    today,
+    "MANUAL",
+    userId
   );
 
-  attendance.workingMinutes = metrics.workingMinutes;
-  attendance.overtimeMinutes = metrics.overtimeMinutes;
-  attendance.shortfallMinutes = metrics.shortfallMinutes;
-  attendance.earlyOutMinutes = metrics.earlyOutMinutes;
-  attendance.status = metrics.status;
   attendance.employeeId = user?.employeeId || attendance.employeeId;
   attendance.employeeName = user?.name || attendance.employeeName;
   attendance.biometricEmpCode =
@@ -476,8 +615,7 @@ const clockOut = async (userId) => {
 
   return {
     success: true,
-    message:
-      "Clock Out Successful",
+    message: "Clock Out Successful",
     data: attendance,
   };
 };
@@ -522,6 +660,8 @@ const getMyHistory =
       await Attendance.find({
         employee: userId,
       })
+        .populate("punchEvents.by", "name employeeId role")
+        .populate("updatedBy", "name employeeId role")
         .sort({
           date: -1,
         })
@@ -606,12 +746,21 @@ const getDashboard =
         }
       );
 
+    const earlyLeave =
+      await Attendance.countDocuments(
+        {
+          date: today,
+          status: "EARLY_LEAVE",
+        }
+      );
+
     const absent =
       totalEmployees -
       (
         present +
         late +
-        halfDay
+        halfDay +
+        earlyLeave
       );
 
     return {
@@ -621,6 +770,7 @@ const getDashboard =
         present,
         late,
         halfDay,
+        earlyLeave,
         absent,
       },
     };
@@ -636,10 +786,45 @@ const formatEmployeeSummary = (employee) => ({
   profilePhoto: employee.profilePhoto || "",
 });
 
-const formatAttendanceSummary = (record) => {
+const formatEmployeeSummaryFromAttendance = (record, employeeById) => {
+  const employeeRef = record?.employee;
+  const employeeIdKey = employeeRef?._id
+    ? String(employeeRef._id)
+    : employeeRef
+      ? String(employeeRef)
+      : "";
+
+  const resolvedEmployee =
+    employeeRef?._id && employeeRef?.name
+      ? employeeRef
+      : employeeIdKey
+        ? employeeById.get(employeeIdKey)
+        : null;
+
+  if (resolvedEmployee?._id) {
+    return formatEmployeeSummary(resolvedEmployee);
+  }
+
+  return {
+    _id: employeeIdKey || record?._id,
+    employeeId: record?.employeeId || "",
+    biometricEmpCode: record?.biometricEmpCode || "",
+    name: record?.employeeName || "Unknown",
+    designation: "",
+    department: "",
+    profilePhoto: "",
+  };
+};
+
+const formatAttendanceSummary = (record, employee = null, dateKey = null) => {
   if (!record) {
     return null;
   }
+
+  const targetDate = dateKey || record.date;
+  const shiftState = employee
+    ? resolveShiftState(record, employee, targetDate)
+    : null;
 
   return {
     _id: record._id,
@@ -650,6 +835,7 @@ const formatAttendanceSummary = (record) => {
     clockIn: record.clockIn,
     clockOut: record.clockOut,
     status: record.status,
+    shiftState,
     clockInSource: record.clockInSource,
     clockOutSource: record.clockOutSource,
     lateMinutes: record.lateMinutes || 0,
@@ -659,10 +845,629 @@ const formatAttendanceSummary = (record) => {
         : record.shortfallMinutes || 0,
     workingMinutes: record.workingMinutes || 0,
     overtimeMinutes: record.overtimeMinutes || 0,
+    totalBreakMinutes: record.totalBreakMinutes || 0,
+    punches: Array.isArray(record.punches) ? record.punches : [],
+    breaks: Array.isArray(record.breaks) ? record.breaks : [],
     punchEvents: Array.isArray(record.punchEvents)
       ? record.punchEvents
       : [],
+    isManuallyUpdated: Boolean(record.isManuallyUpdated),
+    updateReason: record.updateReason || "",
+    updatedAt: record.updatedAt || null,
+    updatedBy: record.updatedBy || null,
   };
+};
+
+const formatUpdatedByName = (updatedBy) => {
+  if (!updatedBy) {
+    return "";
+  }
+
+  // Raw ObjectId / string id — cannot show a name without lookup.
+  if (typeof updatedBy === "string") {
+    return "";
+  }
+
+  if (typeof updatedBy !== "object") {
+    return "";
+  }
+
+  // Unpopulated mongoose ObjectId object (has no name).
+  if (!updatedBy.name && !updatedBy.employeeId && updatedBy._id && !updatedBy.role) {
+    return "";
+  }
+
+  if (updatedBy.employeeId) {
+    return `${updatedBy.name || "--"} (${updatedBy.employeeId})`;
+  }
+
+  return updatedBy.name || "";
+};
+
+const extractHrChangeReason = (note = "", fallback = "") => {
+  const cleaned = String(note || "")
+    .replace(/^Manual update:\s*/i, "")
+    .replace(/^Clock Out revoked:\s*/i, "")
+    .trim();
+
+  return cleaned || String(fallback || "").trim() || "--";
+};
+
+const isHrManualPunchEvent = (event) => {
+  const note = String(event?.note || "").toLowerCase();
+
+  return (
+    event?.source === "MANUAL" &&
+    (note.includes("manual update") || note.includes("clock out revoked"))
+  );
+};
+
+const getHrPunchActionLabel = (event) => {
+  const note = String(event?.note || "").toLowerCase();
+
+  if (note.includes("clock out revoked")) {
+    return "Clock Out Revoked";
+  }
+
+  if (event?.action === "CLOCK_IN") {
+    return "Clock In";
+  }
+
+  if (event?.action === "CLOCK_OUT") {
+    return "Clock Out";
+  }
+
+  return event?.action || "Update";
+};
+
+// Flatten HR/manual corrections so employees can see who changed what and why.
+const buildHrChangeHistory = (records = []) => {
+  const changes = [];
+
+  for (const record of records) {
+    const events = (record.punchEvents || [])
+      .filter(isHrManualPunchEvent)
+      .slice()
+      .sort((left, right) => {
+        const leftTime = left.changedAt
+          ? new Date(left.changedAt).getTime()
+          : 0;
+        const rightTime = right.changedAt
+          ? new Date(right.changedAt).getTime()
+          : 0;
+        return leftTime - rightTime;
+      });
+
+    // Infer previous punch time from earlier same-action events when not stored.
+    const lastTimeByAction = {};
+
+    // Prefer genuine previous clock values from non-manual punches first.
+    (record.punchEvents || []).forEach((event) => {
+      if (
+        event?.source !== "MANUAL" &&
+        event?.action &&
+        event?.time &&
+        !lastTimeByAction[event.action]
+      ) {
+        lastTimeByAction[event.action] = event.time;
+      }
+    });
+
+    for (const event of events) {
+      const actor =
+        event.by && typeof event.by === "object" && event.by.name
+          ? event.by
+          : null;
+
+      const isRevoked = String(event.note || "")
+        .toLowerCase()
+        .includes("clock out revoked");
+
+      const inferredPrevious =
+        event.previousTime || lastTimeByAction[event.action] || null;
+
+      // Next HR edit of same action used this event's new time as previous.
+      if (event.time) {
+        lastTimeByAction[event.action] = event.time;
+      }
+
+      changes.push({
+        date: record.date,
+        action: event.action,
+        actionLabel: getHrPunchActionLabel(event),
+        previousTime: inferredPrevious,
+        newTime: isRevoked ? null : event.time || null,
+        clockIn: record.clockIn || null,
+        clockOut: record.clockOut || null,
+        status: record.status || "",
+        changedAt: event.changedAt || record.updatedAt || null,
+        updatedByName:
+          event.byName
+            ? event.byEmployeeId
+              ? `${event.byName} (${event.byEmployeeId})`
+              : event.byName
+            : formatUpdatedByName(actor) ||
+              formatUpdatedByName(record.updatedBy) ||
+              "--",
+        updatedByRole:
+          event.byRole ||
+          actor?.role ||
+          record.updatedBy?.role ||
+          "",
+        reason: extractHrChangeReason(event.note, record.updateReason),
+      });
+    }
+
+    // Absent / status-only corrections may not create punchEvents.
+    if (
+      record.isManuallyUpdated &&
+      record.updateReason &&
+      events.length === 0
+    ) {
+      changes.push({
+        date: record.date,
+        action: "STATUS_UPDATE",
+        actionLabel:
+          record.status === "ABSENT" ? "Marked Absent" : "Manual Correction",
+        previousTime: null,
+        newTime: null,
+        clockIn: record.clockIn || null,
+        clockOut: record.clockOut || null,
+        status: record.status || "",
+        changedAt: record.updatedAt || null,
+        updatedByName: formatUpdatedByName(record.updatedBy) || "--",
+        updatedByRole: record.updatedBy?.role || "",
+        reason: record.updateReason || "--",
+      });
+    }
+  }
+
+  return changes.sort((left, right) => {
+    const leftTime = left.changedAt ? new Date(left.changedAt).getTime() : 0;
+    const rightTime = right.changedAt ? new Date(right.changedAt).getTime() : 0;
+    return rightTime - leftTime;
+  });
+};
+
+const normalizeBiometricCode = (value) => {
+  if (!value) {
+    return "";
+  }
+
+  const digits = String(value).replace(/\D/g, "");
+
+  if (!digits) {
+    return String(value).trim();
+  }
+
+  const numericValue = Number.parseInt(digits, 10);
+  if (Number.isNaN(numericValue)) {
+    return String(value).trim();
+  }
+
+  return String(numericValue).padStart(4, "0");
+};
+
+const parseBiometricTimeToDate = (dateKey, value) =>
+  parseIstTimeOnDate(dateKey, value);
+
+const canOverrideWithBiometric = (attendance, field) => {
+  if (!attendance) {
+    return true;
+  }
+
+  if (
+    field === "clockIn" &&
+    attendance.clockInSource === "MANUAL" &&
+    attendance.clockIn
+  ) {
+    return false;
+  }
+
+  if (
+    field === "clockOut" &&
+    attendance.clockOutSource === "MANUAL" &&
+    attendance.clockOut
+  ) {
+    return false;
+  }
+
+  return true;
+};
+
+const shouldApplyBiometricClockIn = (existingClockIn, biometricClockIn, attendance) => {
+  if (!biometricClockIn) {
+    return false;
+  }
+
+  if (!canOverrideWithBiometric(attendance, "clockIn")) {
+    return false;
+  }
+
+  if (!existingClockIn) {
+    return true;
+  }
+
+  if (attendance?.clockInSource === "BIOMETRIC") {
+    return (
+      formatIstTimePart(existingClockIn) !==
+      formatIstTimePart(biometricClockIn)
+    );
+  }
+
+  return biometricClockIn < existingClockIn;
+};
+
+const shouldApplyBiometricClockOut = (
+  existingClockOut,
+  biometricClockOut,
+  effectiveClockIn,
+  attendance
+) => {
+  if (!biometricClockOut || !effectiveClockIn) {
+    return false;
+  }
+
+  if (biometricClockOut <= effectiveClockIn) {
+    return false;
+  }
+
+  if (!canOverrideWithBiometric(attendance, "clockOut")) {
+    return false;
+  }
+
+  if (!existingClockOut) {
+    return true;
+  }
+
+  if (attendance?.clockOutSource === "BIOMETRIC") {
+    return (
+      formatIstTimePart(existingClockOut) !==
+      formatIstTimePart(biometricClockOut)
+    );
+  }
+
+  return biometricClockOut > existingClockOut;
+};
+
+const getAttendanceFromBiometric = (
+  existingAttendance,
+  biometricRecord,
+  dateKey,
+  employee = null
+) => {
+  if (!biometricRecord) {
+    return existingAttendance;
+  }
+
+  const biometricClockIn = parseBiometricTimeToDate(dateKey, biometricRecord.inTime);
+  const biometricClockOut = parseBiometricTimeToDate(dateKey, biometricRecord.outTime);
+
+  if (!existingAttendance) {
+    if (!biometricClockIn && !biometricClockOut) {
+      return null;
+    }
+
+    return {
+      _id: null,
+      employeeId: biometricRecord.crmEmployee?.employeeId || "",
+      employeeName: biometricRecord.crmEmployee?.name || biometricRecord.name || "",
+      biometricEmpCode:
+        biometricRecord.crmEmployee?.biometricEmpCode || biometricRecord.empcode || "",
+      date: dateKey,
+      clockIn: biometricClockIn,
+      clockOut: biometricClockOut,
+      status: biometricRecord.status || (biometricClockIn ? "PRESENT" : "ABSENT"),
+      shiftState: biometricClockIn && !biometricClockOut ? "ON_SHIFT" : "COMPLETED",
+      clockInSource: biometricClockIn ? "BIOMETRIC" : null,
+      clockOutSource: biometricClockOut ? "BIOMETRIC" : null,
+      lateMinutes: 0,
+      earlyOutMinutes: 0,
+      workingMinutes: 0,
+      overtimeMinutes: 0,
+      totalBreakMinutes: parseDurationToMinutes(biometricRecord.breakTime),
+      punchEvents: [],
+    };
+  }
+
+  const shiftState =
+    existingAttendance.shiftState ||
+    (employee
+      ? resolveShiftState(existingAttendance, employee, dateKey)
+      : null);
+  const isDayCompleted = shiftState === "COMPLETED";
+
+  const useBiometricClockIn =
+    biometricClockIn &&
+    canOverrideWithBiometric(existingAttendance, "clockIn") &&
+    (
+      !existingAttendance.clockIn ||
+      existingAttendance.clockInSource === "BIOMETRIC"
+    );
+
+  // Summary OUT is provisional during break/shift — never override live attendance.
+  const useBiometricClockOut =
+    isDayCompleted &&
+    biometricClockOut &&
+    canOverrideWithBiometric(existingAttendance, "clockOut") &&
+    (
+      !existingAttendance.clockOut ||
+      existingAttendance.clockOutSource === "BIOMETRIC"
+    );
+
+  return {
+    ...existingAttendance,
+    clockIn: useBiometricClockIn
+      ? biometricClockIn
+      : existingAttendance.clockIn || biometricClockIn,
+    clockOut: useBiometricClockOut
+      ? biometricClockOut
+      : isDayCompleted
+        ? existingAttendance.clockOut || biometricClockOut
+        : null,
+    shiftState,
+    clockInSource:
+      existingAttendance.clockInSource ||
+      (biometricClockIn ? "BIOMETRIC" : existingAttendance.clockInSource),
+    clockOutSource: isDayCompleted
+      ? existingAttendance.clockOutSource ||
+        (biometricClockOut ? "BIOMETRIC" : existingAttendance.clockOutSource)
+      : existingAttendance.clockOutSource,
+    totalBreakMinutes: Math.max(
+      existingAttendance.totalBreakMinutes || 0,
+      parseDurationToMinutes(biometricRecord.breakTime)
+    ),
+  };
+};
+
+const resolveEmployeeForBiometricRecord = (
+  record,
+  employeeById,
+  employeeByCode
+) => {
+  const employeeId = record?.crmEmployee?._id
+    ? String(record.crmEmployee._id)
+    : "";
+
+  if (employeeId && employeeById.has(employeeId)) {
+    return employeeById.get(employeeId);
+  }
+
+  const normalizedCode = normalizeBiometricCode(
+    record?.crmEmployee?.biometricEmpCode || record?.empcode
+  );
+
+  if (normalizedCode && employeeByCode.has(normalizedCode)) {
+    return employeeByCode.get(normalizedCode);
+  }
+
+  return null;
+};
+
+const syncAttendanceFromBiometricInOut = async (
+  dateKey,
+  biometricRecords,
+  employeeById,
+  employeeByCode
+) => {
+  if (!Array.isArray(biometricRecords) || biometricRecords.length === 0) {
+    return;
+  }
+
+  const employeeIds = Array.from(employeeById.keys());
+  if (employeeIds.length === 0) {
+    return;
+  }
+
+  const attendanceDocs = await Attendance.find({
+    date: dateKey,
+    employee: { $in: employeeIds },
+  });
+
+  const attendanceByEmployeeId = new Map();
+  attendanceDocs.forEach((doc) => {
+    attendanceByEmployeeId.set(String(doc.employee), doc);
+  });
+
+  for (const record of biometricRecords) {
+    const employee = resolveEmployeeForBiometricRecord(
+      record,
+      employeeById,
+      employeeByCode
+    );
+
+    if (!employee?._id) {
+      continue;
+    }
+
+    const biometricClockIn = parseBiometricTimeToDate(dateKey, record.inTime);
+    const biometricClockOut = parseBiometricTimeToDate(dateKey, record.outTime);
+
+    if (!biometricClockIn && !biometricClockOut) {
+      continue;
+    }
+
+    const employeeIdKey = String(employee._id);
+    let attendance = attendanceByEmployeeId.get(employeeIdKey);
+
+    if (attendance?.isManuallyUpdated && attendance?.status === "ABSENT") {
+      continue;
+    }
+
+    if (!attendance) {
+      if (!biometricClockIn) {
+        continue;
+      }
+
+      const validClockOut =
+        biometricClockOut && biometricClockOut > biometricClockIn
+          ? biometricClockOut
+          : null;
+      const seedPunches = validClockOut
+        ? [biometricClockIn, validClockOut]
+        : [biometricClockIn];
+      const timeline = derivePunchTimeline(seedPunches);
+      const apiBreakMinutes = parseDurationToMinutes(record.breakTime);
+
+      // In/Out API has no middle punches — use device BreakTime for counting.
+      if (timeline.totalBreakMinutes === 0 && apiBreakMinutes > 0) {
+        timeline.totalBreakMinutes = apiBreakMinutes;
+      }
+
+      attendance = new Attendance({
+        employee: employee._id,
+        date: dateKey,
+        ...getAttendanceEmployeeSnapshot(employee),
+        punchEvents: [],
+      });
+
+      applyTimelineMetrics(
+        attendance,
+        timeline,
+        employee,
+        dateKey,
+        "BIOMETRIC"
+      );
+
+      if (apiBreakMinutes > 0 && (attendance.totalBreakMinutes || 0) === 0) {
+        attendance.totalBreakMinutes = apiBreakMinutes;
+        const metrics = calculateAttendanceMetrics(
+          attendance.clockIn,
+          attendance.clockOut,
+          employee,
+          dateKey,
+          {
+            totalBreakMinutes: apiBreakMinutes,
+            applyCheckoutStatus: shouldApplyCheckoutStatus(
+              dateKey,
+              getOfficeTimes(employee, dateKey).officeEnd
+            ),
+          }
+        );
+        attendance.workingMinutes = metrics.workingMinutes;
+        attendance.overtimeMinutes = metrics.overtimeMinutes;
+        attendance.shortfallMinutes = metrics.shortfallMinutes;
+        attendance.earlyOutMinutes = metrics.earlyOutMinutes;
+        attendance.status = metrics.status;
+      }
+
+      await attendance.save();
+      attendanceByEmployeeId.set(employeeIdKey, attendance);
+      continue;
+    }
+
+    // Prefer raw punch stream from sync; hydrate from processed punches when needed.
+    await hydrateAttendancePunchesFromProcessed(
+      attendance,
+      employee._id,
+      dateKey
+    );
+
+    const existingPunches = getExistingPunchTimes(attendance);
+    let timeline;
+
+    if (existingPunches.length > 2) {
+      timeline = derivePunchTimeline(existingPunches);
+    } else {
+      const seed = [];
+      if (biometricClockIn) {
+        seed.push(biometricClockIn);
+      }
+      if (
+        biometricClockOut &&
+        biometricClockIn &&
+        biometricClockOut > biometricClockIn
+      ) {
+        seed.push(biometricClockOut);
+      }
+      timeline = derivePunchTimeline(
+        seed.length > 0 ? seed : existingPunches
+      );
+    }
+
+    const apiBreakMinutes = parseDurationToMinutes(record.breakTime);
+    if (
+      timeline.totalBreakMinutes === 0 &&
+      apiBreakMinutes > 0 &&
+      timeline.clockOut &&
+      timeline.punches.length <= 2
+    ) {
+      timeline.totalBreakMinutes = apiBreakMinutes;
+    }
+
+    let changed = false;
+    const before = JSON.stringify({
+      clockIn: attendance.clockIn,
+      clockOut: attendance.clockOut,
+      workingMinutes: attendance.workingMinutes,
+      status: attendance.status,
+      totalBreakMinutes: attendance.totalBreakMinutes,
+      punchCount: (attendance.punches || []).length,
+    });
+
+    applyTimelineMetrics(
+      attendance,
+      timeline,
+      employee,
+      dateKey,
+      "BIOMETRIC"
+    );
+
+    if (
+      apiBreakMinutes > 0 &&
+      (attendance.totalBreakMinutes || 0) === 0 &&
+      (attendance.punches || []).length <= 2
+    ) {
+      attendance.totalBreakMinutes = apiBreakMinutes;
+      const metrics = calculateAttendanceMetrics(
+        attendance.clockIn,
+        attendance.clockOut,
+        employee,
+        dateKey,
+        {
+          totalBreakMinutes: apiBreakMinutes,
+          applyCheckoutStatus: shouldApplyCheckoutStatus(
+            dateKey,
+            getOfficeTimes(employee, dateKey).officeEnd
+          ),
+        }
+      );
+      attendance.workingMinutes = metrics.workingMinutes;
+      attendance.overtimeMinutes = metrics.overtimeMinutes;
+      attendance.shortfallMinutes = metrics.shortfallMinutes;
+      attendance.earlyOutMinutes = metrics.earlyOutMinutes;
+      attendance.status = metrics.status;
+    }
+
+    const after = JSON.stringify({
+      clockIn: attendance.clockIn,
+      clockOut: attendance.clockOut,
+      workingMinutes: attendance.workingMinutes,
+      status: attendance.status,
+      totalBreakMinutes: attendance.totalBreakMinutes,
+      punchCount: (attendance.punches || []).length,
+    });
+
+    if (before !== after) {
+      changed = true;
+    }
+
+    const snapshot = getAttendanceEmployeeSnapshot(employee);
+    if (
+      attendance.employeeId !== snapshot.employeeId ||
+      attendance.employeeName !== snapshot.employeeName ||
+      attendance.biometricEmpCode !== snapshot.biometricEmpCode
+    ) {
+      changed = true;
+      attendance.employeeId = snapshot.employeeId;
+      attendance.employeeName = snapshot.employeeName;
+      attendance.biometricEmpCode = snapshot.biometricEmpCode;
+    }
+
+    if (changed) {
+      await attendance.save();
+    }
+  }
 };
 
 const MONTH_LABELS = [
@@ -680,18 +1485,13 @@ const MONTH_LABELS = [
   "DECEMBER",
 ];
 
-const formatTimePart = (dateValue) => {
-  if (!dateValue) {
+const formatTimePart = (dateValue) => formatIstTimePart(dateValue);
+
+const formatMonthlySheetCell = (record, isWeekend, isFutureDate) => {
+  if (isFutureDate) {
     return "";
   }
 
-  const value = new Date(dateValue);
-  const hours = String(value.getHours()).padStart(2, "0");
-  const minutes = String(value.getMinutes()).padStart(2, "0");
-  return `${hours}:${minutes}`;
-};
-
-const formatMonthlySheetCell = (record, isWeekend) => {
   if (!record) {
     return isWeekend ? "" : "A";
   }
@@ -712,6 +1512,11 @@ const formatMonthlySheetCell = (record, isWeekend) => {
     return "HALF DAY";
   }
 
+  if (record.status === "EARLY_LEAVE") {
+    const inLabel = record.clockIn ? formatTimePart(record.clockIn) : "";
+    return inLabel ? `${inLabel} - EL` : "EL";
+  }
+
   const hasClockIn = Boolean(record.clockIn);
   const hasClockOut = Boolean(record.clockOut);
 
@@ -724,6 +1529,93 @@ const formatMonthlySheetCell = (record, isWeekend) => {
   return "P";
 };
 
+const recalculateAttendanceRecordMetrics = async (
+  attendanceDoc,
+  employee,
+  dateKey
+) => {
+  if (!attendanceDoc || !employee) {
+    return;
+  }
+
+  const targetDate = dateKey || attendanceDoc.date;
+  const punches = getExistingPunchTimes(attendanceDoc);
+
+  if (!punches.length && !attendanceDoc.clockIn) {
+    return;
+  }
+
+  const timeline = derivePunchTimeline(punches);
+  const source =
+    attendanceDoc.clockInSource === "MANUAL" ? "MANUAL" : "BIOMETRIC";
+
+  const previousSnapshot = JSON.stringify({
+    clockIn: attendanceDoc.clockIn,
+    clockOut: attendanceDoc.clockOut,
+    status: attendanceDoc.status,
+    workingMinutes: attendanceDoc.workingMinutes,
+    totalBreakMinutes: attendanceDoc.totalBreakMinutes,
+    punchCount: punches.length,
+  });
+
+  applyTimelineMetrics(
+    attendanceDoc,
+    timeline,
+    employee,
+    targetDate,
+    source,
+    null
+  );
+
+  const nextSnapshot = JSON.stringify({
+    clockIn: attendanceDoc.clockIn,
+    clockOut: attendanceDoc.clockOut,
+    status: attendanceDoc.status,
+    workingMinutes: attendanceDoc.workingMinutes,
+    totalBreakMinutes: attendanceDoc.totalBreakMinutes,
+    punchCount: (attendanceDoc.punches || []).length,
+  });
+
+  if (previousSnapshot !== nextSnapshot) {
+    await attendanceDoc.save();
+  }
+};
+
+const hydrateAttendancePunchesFromProcessed = async (
+  attendanceDoc,
+  employeeId,
+  dateKey
+) => {
+  if (!attendanceDoc || !employeeId || !dateKey) {
+    return false;
+  }
+
+  const { start, end } = getIstDayBounds(dateKey);
+  const processedPunches = await ProcessedBiometricPunch.find({
+    employee: employeeId,
+    punchDate: {
+      $gte: start,
+      $lte: end,
+    },
+  })
+    .sort({ punchDate: 1 })
+    .lean();
+
+  if (!processedPunches.length) {
+    return false;
+  }
+
+  const processedTimes = processedPunches.map((item) => item.punchDate);
+  const existingTimes = getExistingPunchTimes(attendanceDoc);
+
+  if (processedTimes.length <= existingTimes.length) {
+    return false;
+  }
+
+  attendanceDoc.punches = processedTimes;
+  return true;
+};
+
 const getAttendanceDashboardDetails = async (dateKey) => {
   const today = dateKey || getTodayDate();
 
@@ -731,28 +1623,62 @@ const getAttendanceDashboardDetails = async (dateKey) => {
     isActive: true,
   })
     .select(
-      "employeeId biometricEmpCode name designation department profilePhoto role"
+      "employeeId biometricEmpCode name designation department profilePhoto role officeTiming"
     )
     .sort({ name: 1 })
     .lean();
 
+  const employeeById = new Map();
+  const employeeByCode = new Map();
+  activeEmployees.forEach((employee) => {
+    const employeeId = String(employee._id);
+    employeeById.set(employeeId, employee);
+
+    const normalizedCode = normalizeBiometricCode(
+      employee.biometricEmpCode || employee.employeeId?.replace(/^DOB/i, "")
+    );
+    if (normalizedCode) {
+      employeeByCode.set(normalizedCode, employee);
+    }
+  });
+
+  const biometricInOutResponse =
+    await fetchBiometricInOutRecords(today);
+
+  await syncAttendanceFromBiometricInOut(
+    today,
+    biometricInOutResponse.records,
+    employeeById,
+    employeeByCode
+  );
+
   const todayRecords = await Attendance.find({
     date: today,
-  })
-    .populate(
-      "employee",
-      "employeeId biometricEmpCode name designation department profilePhoto"
-    )
-    .lean();
+  });
+
+  for (const record of todayRecords) {
+    if (!record?.employee) {
+      continue;
+    }
+
+    const employee = employeeById.get(String(record.employee));
+    if (!employee) {
+      continue;
+    }
+
+    await hydrateAttendancePunchesFromProcessed(
+      record,
+      record.employee,
+      today
+    );
+    await recalculateAttendanceRecordMetrics(record, employee, today);
+  }
 
   const attendanceByEmployeeId = new Map();
 
   todayRecords.forEach((record) => {
-    if (record.employee?._id) {
-      attendanceByEmployeeId.set(
-        String(record.employee._id),
-        record
-      );
+    if (record.employee) {
+      attendanceByEmployeeId.set(String(record.employee), record);
     }
   });
 
@@ -766,6 +1692,10 @@ const getAttendanceDashboardDetails = async (dateKey) => {
 
   const halfDay = todayRecords.filter(
     (record) => record.status === "HALF_DAY"
+  ).length;
+
+  const earlyLeave = todayRecords.filter(
+    (record) => record.status === "EARLY_LEAVE"
   ).length;
 
   const checkInCount = todayRecords.filter(
@@ -792,13 +1722,42 @@ const getAttendanceDashboardDetails = async (dateKey) => {
     (record) => record.clockOutSource === "MANUAL"
   ).length;
 
-  const missingPunchRecords = todayRecords.filter(
-    (record) => record.clockIn && !record.clockOut
-  );
+  const missingPunchRecords = todayRecords.filter((record) => {
+    if (!record.clockIn) {
+      return false;
+    }
+
+    const employee = employeeById.get(String(record.employee));
+    if (!employee) {
+      return false;
+    }
+
+    const shiftState = resolveShiftState(record, employee, today);
+    const { officeEnd } = getOfficeTimes(employee, today);
+
+    return (
+      shiftState !== "COMPLETED" &&
+      (today < getTodayDateKey() || new Date() >= officeEnd)
+    );
+  });
+
+  const isEmployeeAbsent = (attendance) => {
+    if (!attendance) {
+      return true;
+    }
+
+    if (attendance.status === "ABSENT") {
+      return true;
+    }
+
+    return !attendance.clockIn && !attendance.clockOut;
+  };
 
   const totalEmployees = activeEmployees.length;
-  const markedToday = todayRecords.length;
-  const absent = Math.max(totalEmployees - markedToday, 0);
+  const absent = activeEmployees.filter((employee) => {
+    const record = attendanceByEmployeeId.get(String(employee._id));
+    return isEmployeeAbsent(record);
+  }).length;
 
   const attendanceRate =
     totalEmployees > 0
@@ -850,12 +1809,18 @@ const getAttendanceDashboardDetails = async (dateKey) => {
       (a, b) => b.lateMinutes - a.lateMinutes
     )
     .map((record) => ({
-      employee: formatEmployeeSummary(record.employee),
-      attendance: formatAttendanceSummary(record),
+      employee: formatEmployeeSummaryFromAttendance(
+        record,
+        employeeById
+      ),
+      attendance: formatAttendanceSummary(
+        record,
+        employeeById.get(String(record.employee)),
+        today
+      ),
     }));
 
-  const startOfDay = new Date(`${today}T00:00:00`);
-  const endOfDay = new Date(`${today}T23:59:59`);
+  const { start: startOfDay, end: endOfDay } = getIstDayBounds(today);
 
   const recentBiometricPunches =
     await ProcessedBiometricPunch.find({
@@ -875,24 +1840,52 @@ const getAttendanceDashboardDetails = async (dateKey) => {
   const biometricSyncResponse =
     await getBiometricSyncStatus();
 
-  const biometricInOutResponse =
-    await fetchBiometricInOutRecords(today);
+  const biometricByEmployeeId = new Map();
+  const biometricByEmpCode = new Map();
+  biometricInOutResponse.records.forEach((record) => {
+    const employeeId = record.crmEmployee?._id
+      ? String(record.crmEmployee._id)
+      : "";
+    const normalizedCode = normalizeBiometricCode(
+      record.crmEmployee?.biometricEmpCode || record.empcode
+    );
+
+    if (employeeId && !biometricByEmployeeId.has(employeeId)) {
+      biometricByEmployeeId.set(employeeId, record);
+    }
+
+    if (normalizedCode && !biometricByEmpCode.has(normalizedCode)) {
+      biometricByEmpCode.set(normalizedCode, record);
+    }
+  });
 
   const employeeAttendanceList = activeEmployees.map(
     (employee) => {
       const record = attendanceByEmployeeId.get(
         String(employee._id)
       );
+      const normalizedCode = normalizeBiometricCode(
+        employee.biometricEmpCode || employee.employeeId?.replace(/^DOB/i, "")
+      );
+      const biometricRecord =
+        biometricByEmployeeId.get(String(employee._id)) ||
+        biometricByEmpCode.get(normalizedCode);
+      const attendanceSummary = getAttendanceFromBiometric(
+        formatAttendanceSummary(record, employee, today),
+        biometricRecord,
+        today,
+        employee
+      );
 
       return {
         employee: formatEmployeeSummary(employee),
-        attendance: formatAttendanceSummary(record),
+        attendance: attendanceSummary,
       };
     }
   );
 
-  const absentEmployees = employeeAttendanceList.filter(
-    (item) => !item.attendance
+  const absentEmployees = employeeAttendanceList.filter((item) =>
+    isEmployeeAbsent(item.attendance)
   );
 
   return {
@@ -904,6 +1897,7 @@ const getAttendanceDashboardDetails = async (dateKey) => {
         presentToday: present,
         lateToday: late,
         halfDayToday: halfDay,
+        earlyLeaveToday: earlyLeave,
         absentToday: absent,
         attendanceRate,
         checkInCount,
@@ -920,6 +1914,7 @@ const getAttendanceDashboardDetails = async (dateKey) => {
         present,
         late,
         halfDay,
+        earlyLeave,
         absent,
         onLeave: 0,
       },
@@ -928,10 +1923,15 @@ const getAttendanceDashboardDetails = async (dateKey) => {
       lateArrivals,
       missingPunchEmployees: missingPunchRecords.map(
         (record) => ({
-          employee: formatEmployeeSummary(
-            record.employee
+          employee: formatEmployeeSummaryFromAttendance(
+            record,
+            employeeById
           ),
-          attendance: formatAttendanceSummary(record),
+          attendance: formatAttendanceSummary(
+            record,
+            employeeById.get(String(record.employee)),
+            today
+          ),
         })
       ),
       absentEmployees,
@@ -968,17 +1968,15 @@ const getMyAttendanceDashboard = async (
     throw new Error("User not found");
   }
 
-  const todayAttendance = await Attendance.findOne({
-    employee: userId,
-    date: today,
-  }).lean();
+  const employeeById = new Map([[String(userId), user]]);
+  const employeeByCode = new Map();
+  const normalizedCode = normalizeBiometricCode(
+    user.biometricEmpCode || user.employeeId?.replace(/^DOB/i, "")
+  );
 
-  const history = await Attendance.find({
-    employee: userId,
-  })
-    .sort({ date: -1 })
-    .limit(15)
-    .lean();
+  if (normalizedCode) {
+    employeeByCode.set(normalizedCode, user);
+  }
 
   const biometricInOutResponse =
     await fetchBiometricInOutForUser(
@@ -986,25 +1984,102 @@ const getMyAttendanceDashboard = async (
       today
     );
 
+  await syncAttendanceFromBiometricInOut(
+    today,
+    biometricInOutResponse.records,
+    employeeById,
+    employeeByCode
+  );
+
+  const todayAttendanceDoc = await Attendance.findOne({
+    employee: userId,
+    date: today,
+  })
+    .populate("punchEvents.by", "name employeeId role")
+    .populate("updatedBy", "name employeeId role");
+
+  if (todayAttendanceDoc) {
+    await hydrateAttendancePunchesFromProcessed(
+      todayAttendanceDoc,
+      userId,
+      today
+    );
+    await recalculateAttendanceRecordMetrics(
+      todayAttendanceDoc,
+      user,
+      today
+    );
+  }
+
+  const todayAttendance = todayAttendanceDoc
+    ? todayAttendanceDoc.toObject()
+    : null;
+
+  const history = await Attendance.find({
+    employee: userId,
+  })
+    .populate("punchEvents.by", "name employeeId role")
+    .populate("updatedBy", "name employeeId role")
+    .sort({ date: -1 })
+    .limit(60)
+    .lean();
+
+  // Dedicated pull of HR corrections (may go beyond recent day history).
+  const hrChangeRecords = await Attendance.find({
+    employee: userId,
+    $or: [
+      { isManuallyUpdated: true },
+      { "punchEvents.source": "MANUAL" },
+      {
+        "punchEvents.note": {
+          $regex: /Manual update:|Clock Out revoked:/i,
+        },
+      },
+    ],
+  })
+    .populate("punchEvents.by", "name employeeId role")
+    .populate("updatedBy", "name employeeId role")
+    .sort({ updatedAt: -1 })
+    .limit(100)
+    .lean();
+
   const biometricToday =
     biometricInOutResponse.records[0] || null;
 
+  const shiftState = resolveShiftState(
+    todayAttendance,
+    user,
+    today
+  );
+  const { officeEnd } = getOfficeTimes(user, today);
   const hasClockIn = Boolean(todayAttendance?.clockIn);
-  const hasClockOut = Boolean(todayAttendance?.clockOut);
+  // UI: COMPLETED = day done; ON_BREAK must not look like final checkout.
+  const hasClockOut = shiftState === "COMPLETED";
   const isPresent = Boolean(
     todayAttendance &&
-      ["PRESENT", "LATE", "HALF_DAY"].includes(
+      ["PRESENT", "LATE", "HALF_DAY", "EARLY_LEAVE"].includes(
         todayAttendance.status
       )
   );
+  const totalBreakMinutes = Math.max(
+    todayAttendance?.totalBreakMinutes || 0,
+    parseDurationToMinutes(biometricToday?.breakTime)
+  );
+  const missingPunch =
+    hasClockIn &&
+    shiftState !== "COMPLETED" &&
+    (today < getTodayDateKey() || new Date() >= officeEnd);
 
   return {
     success: true,
     data: {
       date: today,
       employee: formatEmployeeSummary(user),
-      todayAttendance:
-        formatAttendanceSummary(todayAttendance),
+      todayAttendance: formatAttendanceSummary(
+        todayAttendance,
+        user,
+        today
+      ),
       biometricToday,
       biometricInOutRecords:
         biometricInOutResponse.records,
@@ -1012,16 +2087,19 @@ const getMyAttendanceDashboard = async (
         biometricInOutResponse.error,
       history: history.map((record) => ({
         date: record.date,
-        attendance: formatAttendanceSummary(record),
+        attendance: formatAttendanceSummary(record, user, record.date),
       })),
+      hrChangeHistory: buildHrChangeHistory(hrChangeRecords),
       overview: {
         status: todayAttendance?.status || "ABSENT",
         isPresent,
         hasClockIn,
         hasClockOut,
-        missingPunch: hasClockIn && !hasClockOut,
+        shiftState,
+        missingPunch,
         workingMinutes:
           todayAttendance?.workingMinutes || 0,
+        totalBreakMinutes,
         lateMinutes: todayAttendance?.lateMinutes || 0,
         earlyOutMinutes:
           typeof todayAttendance?.earlyOutMinutes === "number"
@@ -1076,6 +2154,8 @@ const getEmployeeAttendance =
         employee:
           user._id,
       })
+        .populate("punchEvents.by", "name employeeId role")
+        .populate("updatedBy", "name employeeId role")
         .sort({
           date: -1,
         })
@@ -1093,7 +2173,49 @@ const getEmployeeAttendance =
     };
   };
 
-const getMonthlyTeamSheet = async (month, year) => {
+const syncMonthlyAttendanceFromBiometric = async (
+  month,
+  year,
+  employeeById,
+  employeeByCode
+) => {
+  const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const monthEnd = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+  const today = getTodayDateKey();
+  const effectiveEnd = monthEnd > today ? today : monthEnd;
+
+  if (monthStart > today) {
+    return;
+  }
+
+  const rangeResponse = await fetchBiometricInOutForRange(
+    monthStart,
+    effectiveEnd
+  );
+
+  if (rangeResponse.error) {
+    console.warn(
+      `[Biometric Month Sync] ${monthStart}..${effectiveEnd} skipped: ${rangeResponse.error}`
+    );
+    return;
+  }
+
+  const dateKeys = Object.keys(rangeResponse.recordsByDate).sort();
+  console.log(
+    `[Biometric Month Sync] Hydrating ${dateKeys.length} day(s) for ${month}/${year}`
+  );
+  for (const dateKey of dateKeys) {
+    await syncAttendanceFromBiometricInOut(
+      dateKey,
+      rangeResponse.recordsByDate[dateKey],
+      employeeById,
+      employeeByCode
+    );
+  }
+};
+
+const getMonthlyTeamSheet = async (month, year, employeeId = "") => {
   if (!month || !year || month < 1 || month > 12) {
     throw new Error("Valid month and year are required");
   }
@@ -1101,13 +2223,39 @@ const getMonthlyTeamSheet = async (month, year) => {
   const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
   const lastDay = new Date(year, month, 0).getDate();
   const monthEnd = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
-
-  const activeEmployees = await User.find({
+  const userFilter = {
     isActive: true,
-  })
-    .select("employeeId biometricEmpCode name designation department")
+  };
+
+  if (String(employeeId || "").trim()) {
+    userFilter._id = String(employeeId).trim();
+  }
+
+  const activeEmployees = await User.find(userFilter)
+    .select("employeeId biometricEmpCode name designation department officeTiming")
     .sort({ name: 1 })
     .lean();
+
+  const employeeById = new Map();
+  const employeeByCode = new Map();
+  activeEmployees.forEach((employee) => {
+    employeeById.set(String(employee._id), employee);
+
+    const normalizedCode = normalizeBiometricCode(
+      employee.biometricEmpCode || employee.employeeId?.replace(/^DOB/i, "")
+    );
+
+    if (normalizedCode) {
+      employeeByCode.set(normalizedCode, employee);
+    }
+  });
+
+  await syncMonthlyAttendanceFromBiometric(
+    month,
+    year,
+    employeeById,
+    employeeByCode
+  );
 
   const employeeIds = activeEmployees.map((employee) => employee._id);
 
@@ -1124,6 +2272,7 @@ const getMonthlyTeamSheet = async (month, year) => {
     .lean();
 
   const attendanceMap = new Map();
+  const todayDateKey = getTodayDate();
 
   monthlyRecords.forEach((record) => {
     const key = `${String(record.employee)}-${record.date}`;
@@ -1133,20 +2282,14 @@ const getMonthlyTeamSheet = async (month, year) => {
   const rows = Array.from({ length: lastDay }, (_, index) => {
     const dayNumber = index + 1;
     const date = `${year}-${String(month).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
-    const dateValue = new Date(`${date}T00:00:00`);
-    const day = dateValue
-      .toLocaleDateString("en-US", {
-        weekday: "short",
-      })
-      .toUpperCase();
-
-    const weekday = dateValue.getDay();
-    const isWeekend = weekday === 0 || weekday === 6;
+    const day = getIstWeekdayShort(date);
+    const isWeekend = isIstWeekendDateKey(date);
+    const isFutureDate = date > todayDateKey;
 
     const cells = activeEmployees.map((employee) => {
       const key = `${String(employee._id)}-${date}`;
       const record = attendanceMap.get(key);
-      return formatMonthlySheetCell(record, isWeekend);
+      return formatMonthlySheetCell(record, isWeekend, isFutureDate);
     });
 
     return {
@@ -1180,59 +2323,155 @@ const manualUpdateAttendance = async (
   body,
   updatedBy
 ) => {
-  const attendance = await Attendance.findById(attendanceId);
-
-  if (!attendance) {
-    throw new Error("Attendance not found");
-  }
-
-  const { clockIn, clockOut, reason } = body;
-
-  if (!clockIn && !clockOut) {
-    throw new Error("Clock In or Clock Out is required");
-  }
+  const { clockIn, clockOut, reason, date, employeeId, status } = body;
 
   if (!reason) {
     throw new Error("Reason is required");
   }
 
-  const attendanceDate = attendance.date;
-  const user = await User.findById(attendance.employee);
+  const normalizedStatus =
+    status === "ABSENT" || status === "PRESENT" ? status : null;
+
+  if (!normalizedStatus && !clockIn && !clockOut) {
+    throw new Error("Clock In or Clock Out is required");
+  }
+
+  let targetEmployeeId = null;
+  let fallbackDate = date || null;
+
+  const attendanceById = await Attendance.findById(attendanceId);
+
+  if (attendanceById) {
+    targetEmployeeId = attendanceById.employee;
+    fallbackDate = fallbackDate || attendanceById.date;
+  } else if (employeeId) {
+    targetEmployeeId = employeeId;
+  } else if (attendanceId) {
+    const userById = await User.findById(attendanceId);
+
+    if (userById) {
+      targetEmployeeId = userById._id;
+    }
+  }
+
+  if (!targetEmployeeId) {
+    throw new Error("Attendance not found");
+  }
+
+  const targetDate = fallbackDate;
+
+  if (!targetDate) {
+    throw new Error("Date is required");
+  }
+
+  let attendance = await Attendance.findOne({
+    employee: targetEmployeeId,
+    date: targetDate,
+  });
+
+  const user = await User.findById(targetEmployeeId);
+
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  if (!attendance) {
+    attendance = await Attendance.create({
+      employee: targetEmployeeId,
+      date: targetDate,
+      ...getAttendanceEmployeeSnapshot(user),
+      status: "ABSENT",
+      punchEvents: [],
+    });
+  }
+
+  if (normalizedStatus === "ABSENT") {
+    attendance.clockIn = null;
+    attendance.clockOut = null;
+    attendance.punches = [];
+    attendance.breaks = [];
+    attendance.totalBreakMinutes = 0;
+    attendance.status = "ABSENT";
+    attendance.workingMinutes = 0;
+    attendance.lateMinutes = 0;
+    attendance.overtimeMinutes = 0;
+    attendance.shortfallMinutes = 0;
+    attendance.earlyOutMinutes = 0;
+    attendance.employeeId = user?.employeeId || attendance.employeeId;
+    attendance.employeeName = user?.name || attendance.employeeName;
+    attendance.biometricEmpCode =
+      user?.biometricEmpCode || attendance.biometricEmpCode;
+    attendance.updatedBy = updatedBy;
+    attendance.updateReason = reason;
+    attendance.isManuallyUpdated = true;
+
+    await attendance.save();
+
+    return {
+      success: true,
+      message: "Attendance marked as absent",
+      data: attendance,
+    };
+  }
+
+  if (normalizedStatus === "PRESENT" && !clockIn && !clockOut) {
+    throw new Error("Clock In or Clock Out is required for present status");
+  }
 
   const existingClockIn = attendance.clockIn || null;
   const existingClockOut = attendance.clockOut || null;
 
   const nextClockIn = clockIn
-    ? new Date(`${attendanceDate}T${clockIn}:00`)
+    ? parseIstTimeOnDate(targetDate, `${clockIn}:00`)
     : existingClockIn;
   const nextClockOut = clockOut
-    ? new Date(`${attendanceDate}T${clockOut}:00`)
+    ? parseIstTimeOnDate(targetDate, `${clockOut}:00`)
     : existingClockOut;
 
-  if (!nextClockIn) {
+  if (clockOut && !nextClockIn) {
     throw new Error("Clock In is required before setting Clock Out");
   }
 
-  if (nextClockOut && nextClockOut <= nextClockIn) {
+  if (nextClockIn && nextClockOut && nextClockOut <= nextClockIn) {
     throw new Error("Clock Out must be greater than Clock In");
   }
 
-  attendance.clockIn = nextClockIn;
-  attendance.clockOut = nextClockOut;
-
   if (clockIn) {
+    attendance.clockIn = nextClockIn;
     attendance.clockInSource = "MANUAL";
   }
 
   if (clockOut) {
+    attendance.clockOut = nextClockOut;
     attendance.clockOutSource = "MANUAL";
   }
 
+  // Keep punch timeline aligned with HR override (counting only).
+  const manualPunches = [];
+  if (attendance.clockIn) {
+    manualPunches.push(attendance.clockIn);
+  }
+  if (attendance.clockOut) {
+    manualPunches.push(attendance.clockOut);
+  }
+  const timeline = derivePunchTimeline(manualPunches);
+  attendance.punches = timeline.punches;
+  attendance.breaks = timeline.breaks;
+  attendance.totalBreakMinutes = timeline.totalBreakMinutes;
+
+  const { officeEnd } = getOfficeTimes(user, targetDate);
   const metrics = calculateAttendanceMetrics(
-    nextClockIn,
-    nextClockOut,
+    attendance.clockIn,
+    attendance.clockOut,
     user,
-    attendanceDate
+    targetDate,
+    {
+      totalBreakMinutes: timeline.totalBreakMinutes,
+      applyCheckoutStatus: shouldApplyCheckoutStatus(
+        targetDate,
+        officeEnd
+      ),
+    }
   );
 
   attendance.workingMinutes = metrics.workingMinutes;
@@ -1250,12 +2489,23 @@ const manualUpdateAttendance = async (
   attendance.updateReason = reason;
   attendance.isManuallyUpdated = true;
 
+  const updater = await User.findById(updatedBy)
+    .select("name employeeId role")
+    .lean();
+  const updaterSnapshot = {
+    byName: updater?.name || "",
+    byEmployeeId: updater?.employeeId || "",
+    byRole: updater?.role || "",
+  };
+
   if (clockIn) {
     addPunchEvent(attendance, {
       action: "CLOCK_IN",
       source: "MANUAL",
       time: nextClockIn,
+      previousTime: existingClockIn,
       by: updatedBy,
+      ...updaterSnapshot,
       note: `Manual update: ${reason}`,
     });
   }
@@ -1265,7 +2515,9 @@ const manualUpdateAttendance = async (
       action: "CLOCK_OUT",
       source: "MANUAL",
       time: nextClockOut,
+      previousTime: existingClockOut,
       by: updatedBy,
+      ...updaterSnapshot,
       note: `Manual update: ${reason}`,
     });
   }
@@ -1275,6 +2527,74 @@ const manualUpdateAttendance = async (
   return {
     success: true,
     message: "Attendance Updated Successfully",
+    data: attendance,
+  };
+};
+
+const revokeClockOut = async (attendanceId, reason, updatedBy) => {
+  const attendance = await Attendance.findById(attendanceId);
+
+  if (!attendance) {
+    throw new Error("Attendance not found");
+  }
+
+  if (!reason || !reason.trim()) {
+    throw new Error("Reason is required");
+  }
+
+  if (!attendance.clockIn) {
+    throw new Error("Clock In is missing. Cannot revoke Clock Out.");
+  }
+
+  if (!attendance.clockOut) {
+    throw new Error("Clock Out is already empty");
+  }
+
+  const user = await User.findById(attendance.employee);
+  const attendanceDate = attendance.date;
+  const previousClockOut = attendance.clockOut;
+
+  // Remove last out punch so timeline returns to ON_SHIFT.
+  const punches = getExistingPunchTimes(attendance);
+  if (punches.length > 0 && punches.length % 2 === 0) {
+    punches.pop();
+  }
+
+  const timeline = derivePunchTimeline(punches);
+  applyTimelineMetrics(
+    attendance,
+    timeline,
+    user,
+    attendanceDate,
+    "MANUAL",
+    updatedBy
+  );
+
+  attendance.updatedBy = updatedBy;
+  attendance.updateReason = reason.trim();
+  attendance.isManuallyUpdated = true;
+
+  const updater = await User.findById(updatedBy)
+    .select("name employeeId role")
+    .lean();
+
+  addPunchEvent(attendance, {
+    action: "CLOCK_OUT",
+    source: "MANUAL",
+    time: previousClockOut,
+    previousTime: previousClockOut,
+    by: updatedBy,
+    byName: updater?.name || "",
+    byEmployeeId: updater?.employeeId || "",
+    byRole: updater?.role || "",
+    note: `Clock Out revoked: ${reason.trim()}`,
+  });
+
+  await attendance.save();
+
+  return {
+    success: true,
+    message: "Clock Out revoked successfully",
     data: attendance,
   };
 };
@@ -1292,6 +2612,7 @@ module.exports = {
   getEmployeeAttendance,
   getMonthlyTeamSheet,
   manualUpdateAttendance,
+  revokeClockOut,
   applyBiometricPunch,
   parseBiometricPunchDate,
 };

@@ -115,6 +115,38 @@ const getAllUsers = async (req, res) => {
     }
 };
 
+const getVisibleTeamMembers = async (req, res) => {
+    try {
+        const result = await userService.getVisibleTeamMembers(req.user);
+
+        return res.status(200).json({
+            success: true,
+            count: result.length,
+            data: result,
+        });
+    } catch (error) {
+        return res.status(400).json({
+            success: false,
+            message: error.message,
+        });
+    }
+};
+
+const getUpcomingBirthdays = async (req, res) => {
+    try {
+        const days = Number(req.query.days) || 30;
+        const limit = Number(req.query.limit) || 5;
+        const result = await userService.getUpcomingBirthdays(days, limit);
+
+        return res.status(200).json(result);
+    } catch (error) {
+        return res.status(400).json({
+            success: false,
+            message: error.message,
+        });
+    }
+};
+
 const getUserById = async (req, res) => {
     try {
         const result =await userService.getUserById(req.params.id);
@@ -228,6 +260,8 @@ module.exports = {
     updateProfile,
     updateProfilePhoto,
     getAllUsers,
+    getVisibleTeamMembers,
+    getUpcomingBirthdays,
     getUserById,
     updateUserStatus,
     updateUserById,

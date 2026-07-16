@@ -63,6 +63,19 @@ const leaveSchema = new mongoose.Schema(
       },
     ],
 
+    // Who should review this leave (same idea as Daily Work reporting manager)
+    reportingManager: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    reportingManagerSnapshot: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
     status: {
       type: String,
       enum: [
