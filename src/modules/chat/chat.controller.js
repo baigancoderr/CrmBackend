@@ -318,6 +318,35 @@ const deleteMessage = async (req, res) => {
   }
 };
 
+const updateGroupPhoto = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "Photo file is required",
+      });
+    }
+
+    const conversation = await chatService.updateGroupPhoto(
+      req.params.id,
+      req.file,
+      req.user,
+      getIo()
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Group photo updated successfully",
+      data: conversation,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 const markConversationAsRead = async (req, res) => {
   try {
     const result = await chatService.markConversationAsRead(
@@ -468,6 +497,7 @@ module.exports = {
   getMyConversations,
   getConversationById,
   updateConversation,
+  updateGroupPhoto,
   deleteConversation,
   leaveConversation,
   getConversationMembers,

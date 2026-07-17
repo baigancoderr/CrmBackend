@@ -1770,6 +1770,79 @@ const setSocketIo = (io) => {
 
 const getSocketIo = () => socketIo;
 
+const updateGroupPhoto = async (conversationId, file, user, io) => {
+  const conversation = await Conversation.findById(conversationId);
+
+  if (!conversation) {
+    throw new Error("Conversation not found");
+  }
+
+  if (conversation.type !== "GROUP") {
+    throw new Error("Only group conversations can have a photo");
+  }
+
+  assertGroupManager(conversation, user.id, user.role);
+
+  // Delete old photo file if it was a locally stored file
+  if (conversation.photo) {
+    const oldRelative = conversation.photo.startsWith("/")
+      ? conversation.photo
+      : `/${conversation.photo}`;
+
+    // Strip /api prefix if present so we get a real filesystem path
+    const normalizedPath = oldRelative.replace(/^\/api/, "");
+
+    const oldAbsolute = path.join(
+      __dirname,
+      "../../..",
+      normalizedPath
+    );
+
+    fs.unlink(oldAbsolute).catch(() => {
+      // Ignore — old file may not exist locally (e.g. migrated storage)
+    });
+  }
+
+  // Build the public URL path for the uploaded file
+  const relativePath = isPrivateStorageEnabled
+    ? `/uploads-private/chat/${file.filename}`
+    : `/uploads/chat/${file.filename}`;
+
+  conversation.photo = relativePath;
+  await conversation.save();
+
+  const populatedConversation = await populateConversation(
+    Conversation.findById(conversation._id)
+  );
+
+  // Notify all active group members in real time
+  if (io) {
+    const activeMembers = conversation.members.filter((m) => !m.leftAt);
+    activeMembers.forEach((member) => {
+      io.to(`user:${member.user.toString()}`).emit(
+        "conversation:updated",
+        {
+          conversationId: conversationId.toString(),
+          conversation: { photo: relativePath },
+        }
+      );
+    });
+  }
+
+  await incrementMetric("chat_group_photo_updated", {
+    actorId: user.id.toString(),
+  });
+  await logAuditEvent("chat_group_photo_updated", {
+    conversationId: conversationId.toString(),
+    actorId: user.id.toString(),
+  });
+
+  return formatConversation(
+    populatedConversation.toObject(),
+    user.id
+  );
+};
+
 module.exports = {
   canCreateGroup,
   canAccessConversation,
@@ -1777,6 +1850,7 @@ module.exports = {
   getMyConversations,
   getConversationById,
   updateConversation,
+  updateGroupPhoto,
   deleteConversation,
   leaveConversation,
   getConversationMembers,

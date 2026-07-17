@@ -78,6 +78,34 @@ router.patch(
   chatController.updateConversation
 );
 
+router.post(
+  "/conversations/:id/photo",
+  validateRequest({
+    params: conversationIdParamSchema,
+  }),
+  chatUploadRateLimit,
+  (req, res, next) => {
+    chatUpload.single("photo")(req, res, (err) => {
+      if (!err) {
+        return next();
+      }
+
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).json({
+          success: false,
+          message: "Photo is too large. Max size allowed is 10MB.",
+        });
+      }
+
+      return res.status(400).json({
+        success: false,
+        message: err.message || "Upload failed",
+      });
+    });
+  },
+  chatController.updateGroupPhoto
+);
+
 router.delete(
   "/conversations/:id",
   validateRequest({
