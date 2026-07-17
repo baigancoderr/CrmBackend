@@ -49,19 +49,39 @@ const parseBiometricPunchDateString = (punchDateString) => {
     return null;
   }
 
-  const [datePart, timePart] = punchDateString.trim().split(" ");
+  const normalized = String(punchDateString).trim();
+  const match = normalized.match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i
+  );
 
-  if (!datePart || !timePart) {
+  if (!match) {
     return null;
   }
 
-  const [day, month, year] = datePart.split("/");
-  const [hours, minutes, seconds = "0"] = timePart.split(":");
-  const dateKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  let hours = Number(match[4]);
+  const minutes = match[5];
+  const seconds = match[6] || "00";
+  const meridiem = (match[7] || "").toUpperCase();
+
+  if (meridiem === "PM" && hours < 12) {
+    hours += 12;
+  }
+  if (meridiem === "AM" && hours === 12) {
+    hours = 0;
+  }
+
+  if (hours < 0 || hours > 23) {
+    return null;
+  }
+
+  const dateKey = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 
   return parseIstTimeOnDate(
     dateKey,
-    `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    `${String(hours).padStart(2, "0")}:${minutes}:${seconds}`
   );
 };
 

@@ -33,6 +33,27 @@ const submitReport = async (req, res) => {
   }
 };
 
+const updateMyReport = async (req, res) => {
+  try {
+    const data = await dailyWorkReportService.updateMyDailyWorkReport(
+      req.user.id,
+      req.params.id,
+      req.body
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Daily work report updated successfully.",
+      data,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 const getMyReports = async (req, res) => {
   try {
     const data = await dailyWorkReportService.getMyDailyWorkReports(req.user.id, req.query);
@@ -92,6 +113,7 @@ const reviewReport = async (req, res) => {
 module.exports = {
   getPrefillDetails,
   submitReport,
+  updateMyReport,
   getMyReports,
   getAllReports,
   reviewReport,

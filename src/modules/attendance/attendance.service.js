@@ -155,25 +155,27 @@ const calculateAttendanceMetrics = (
   let overtimeMinutes = 0;
   let shortfallMinutes = 0;
   let workingMinutes = 0;
-  let status = "PRESENT";
+  let status = "ABSENT";
 
-  // Check-in: Present within grace window, Late after grace end time.
-  if (clockInDate > lateGraceEnd) {
+  if (clockInDate) {
+    // Check-in: Present within grace window, Late after grace end time.
+    status = "PRESENT";
+    if (clockInDate > lateGraceEnd) {
     lateMinutes = Math.floor(
       (clockInDate - lateGraceEnd) / 60000
     );
     status = "LATE";
+    }
   }
 
-  if (clockOutDate) {
+  if (clockInDate && clockOutDate) {
     // Working clock starts from office start time if employee checks in early.
     const effectiveWorkStart =
       clockInDate < officeStart ? officeStart : clockInDate;
-    workingMinutes = Math.max(
-      Math.max0,
-      Math.floor((clockOutDate - effectiveWorkStart, 0) / 60000) -
-        totalBreakMinutes
+    workingMinutes = Math.floor(
+      Math.max(clockOutDate - effectiveWorkStart, 0) / 60000
     );
+    workingMinutes = Math.max(workingMinutes - totalBreakMinutes, 0);
 
     // Provisional mid-day outs (break) should not create shortfall / early-leave metrics.
     if (applyCheckoutStatus) {
@@ -1180,34 +1182,31 @@ const getAttendanceFromBiometric = (
       ? resolveShiftState(existingAttendance, employee, dateKey)
       : null);
   const isDayCompleted = shiftState === "COMPLETED";
-
-  const useBiometricClockIn =
+  const hasStoredPunches =
+    Array.isArray(existingAttendance.punches) &&
+    existingAttendance.punches.length > 0;
+  // Dashboard responses should remain stable: prefer persisted attendance values.
+  const shouldUseBiometricClockIn =
+    !existingAttendance.clockIn &&
     biometricClockIn &&
-    canOverrideWithBiometric(existingAttendance, "clockIn") &&
-    (
-      !existingAttendance.clockIn ||
-      existingAttendance.clockInSource === "BIOMETRIC"
-    );
-
+    canOverrideWithBiometric(existingAttendance, "clockIn");
   // Summary OUT is provisional during break/shift — never override live attendance.
-  const useBiometricClockOut =
+  const shouldUseBiometricClockOut =
     isDayCompleted &&
+    !existingAttendance.clockOut &&
+    !hasStoredPunches &&
     biometricClockOut &&
-    canOverrideWithBiometric(existingAttendance, "clockOut") &&
-    (
-      !existingAttendance.clockOut ||
-      existingAttendance.clockOutSource === "BIOMETRIC"
-    );
+    canOverrideWithBiometric(existingAttendance, "clockOut");
 
   return {
     ...existingAttendance,
-    clockIn: useBiometricClockIn
+    clockIn: shouldUseBiometricClockIn
       ? biometricClockIn
-      : existingAttendance.clockIn || biometricClockIn,
-    clockOut: useBiometricClockOut
+      : existingAttendance.clockIn || null,
+    clockOut: shouldUseBiometricClockOut
       ? biometricClockOut
       : isDayCompleted
-        ? existingAttendance.clockOut || biometricClockOut
+        ? existingAttendance.clockOut || null
         : null,
     shiftState,
     clockInSource:

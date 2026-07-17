@@ -23,6 +23,13 @@ router.post(
   dailyWorkReportController.submitReport
 );
 
+router.patch(
+  "/update/:id",
+  authMiddleware,
+  roleMiddleware(...SUBMITTER_ROLES),
+  dailyWorkReportController.updateMyReport
+);
+
 router.get(
   "/my",
   authMiddleware,

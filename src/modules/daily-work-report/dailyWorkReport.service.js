@@ -5,6 +5,7 @@ const REVIEWER_ROLES = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL"];
 const REPORTING_MANAGER_ROLES = ["PROJECT_MANAGER", "TL", "HR"];
 const WORK_STATUS_OPTIONS = ["COMPLETED", "IN_PROGRESS", "BLOCKED", "ON_HOLD"];
 const REVIEW_STATUS_OPTIONS = ["PENDING", "REVIEWED"];
+const MAX_EDIT_WINDOW_DAYS = 2;
 const MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_MIME_TYPES = [
   "image/jpeg",
@@ -52,6 +53,26 @@ const normalizeDateString = (value) => {
   }
 
   return normalized;
+};
+
+const getDateStart = (dateString) => {
+  const normalizedDate = normalizeDateString(dateString);
+  if (!normalizedDate) {
+    return null;
+  }
+  const [year, month, day] = normalizedDate.split("-").map(Number);
+  return new Date(year, month - 1, day, 0, 0, 0, 0);
+};
+
+const isWithinEditableWindow = (reportDate) => {
+  const reportDateStart = getDateStart(reportDate);
+  if (!reportDateStart) {
+    return false;
+  }
+  const editDeadline = new Date(reportDateStart);
+  editDeadline.setDate(editDeadline.getDate() + MAX_EDIT_WINDOW_DAYS);
+  editDeadline.setHours(23, 59, 59, 999);
+  return Date.now() <= editDeadline.getTime();
 };
 
 const validateAttachment = (attachment) => {
@@ -195,6 +216,79 @@ const submitDailyWorkReport = async (userId, payload) => {
     .populate("reviewedBy", "name employeeId role");
 
   return createdRecord;
+};
+
+const updateMyDailyWorkReport = async (userId, reportId, payload) => {
+  const report = await DailyWorkReport.findById(reportId);
+  if (!report) {
+    throw createAppError("Daily work report not found.", 404);
+  }
+
+  if (String(report.employee || "") !== String(userId)) {
+    throw createAppError("You can edit only your own report.", 403);
+  }
+
+  if (report.reviewStatus === "REVIEWED") {
+    throw createAppError("Reviewed report cannot be edited.", 422);
+  }
+
+  if (!isWithinEditableWindow(report.reportDate)) {
+    throw createAppError("You can edit this report only within 2 days.", 422);
+  }
+
+  const projectName = String(payload.projectName || "").trim();
+  const reportDate = normalizeDateString(payload.reportDate || "");
+  const workDescription = String(payload.workDescription || "").trim();
+  const reportingManagerId = String(payload.reportingManagerId || "").trim();
+  const blockers = String(payload.blockers || "").trim();
+  const attachment = validateAttachment(payload.attachment);
+
+  if (!projectName) {
+    throw createAppError("Project name is required.", 422);
+  }
+
+  if (!reportDate) {
+    throw createAppError("Date is required.", 422);
+  }
+
+  if (!workDescription) {
+    throw createAppError("Work description is required.", 422);
+  }
+
+  if (!reportingManagerId) {
+    throw createAppError("Reporting manager is required.", 422);
+  }
+
+  const todayDate = getTodayDateString();
+  if (reportDate > todayDate) {
+    throw createAppError("Future date is not allowed.", 422);
+  }
+
+  const reportingManager = await User.findOne({
+    _id: reportingManagerId,
+    role: { $in: REPORTING_MANAGER_ROLES },
+    isActive: true,
+  }).select("name employeeId role");
+
+  if (!reportingManager) {
+    throw createAppError("Please select a valid reporting manager.", 422);
+  }
+
+  report.projectName = projectName;
+  report.reportDate = reportDate;
+  report.workDescription = workDescription;
+  report.reportingManager = reportingManager._id;
+  report.reportingManagerSnapshot = reportingManager.name || "";
+  report.blockers = blockers;
+  report.attachment = attachment;
+
+  await report.save();
+
+  const updatedRecord = await DailyWorkReport.findById(report._id)
+    .populate("employee", "name employeeId role")
+    .populate("reviewedBy", "name employeeId role");
+
+  return updatedRecord;
 };
 
 const getMyDailyWorkReports = async (userId, query) => {
@@ -369,6 +463,7 @@ module.exports = {
   REVIEWER_ROLES,
   getMyPrefillDetails,
   submitDailyWorkReport,
+  updateMyDailyWorkReport,
   getMyDailyWorkReports,
   getAllDailyWorkReports,
   reviewDailyWorkReport,
