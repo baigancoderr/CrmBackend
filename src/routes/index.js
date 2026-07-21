@@ -21,4 +21,6 @@ router.use("/chat", require("../modules/chat/chat.routes"));
 router.use("/notes", require("../modules/notes/notes.routes"));
 router.use("/folders", require("../modules/notes/folder.routes"));
 
+router.use("/tickets", require("../modules/tickets/ticket.routes"));
+
 module.exports = router;
