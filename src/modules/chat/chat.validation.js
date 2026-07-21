@@ -25,6 +25,10 @@ const messageIdParamSchema = Joi.object({
   messageId: objectId.required(),
 });
 
+const notificationIdParamSchema = Joi.object({
+  notificationId: objectId.required(),
+});
+
 const removeMemberParamSchema = Joi.object({
   id: objectId.required(),
   userId: objectId.required(),
@@ -93,11 +97,18 @@ const conversationAttachmentsQuerySchema = Joi.object({
   limit: Joi.number().integer().min(1).max(50).optional(),
 });
 
+const notificationsQuerySchema = Joi.object({
+  page: Joi.number().integer().min(1).optional(),
+  limit: Joi.number().integer().min(1).max(50).optional(),
+  unreadOnly: Joi.boolean().optional(),
+});
+
 module.exports = {
   paginationQuerySchema,
   createConversationSchema,
   conversationIdParamSchema,
   messageIdParamSchema,
+  notificationIdParamSchema,
   removeMemberParamSchema,
   fileNameParamSchema,
   updateConversationSchema,
@@ -110,4 +121,5 @@ module.exports = {
   presenceQuerySchema,
   socketConversationSchema,
   conversationAttachmentsQuerySchema,
+  notificationsQuerySchema,
 };

@@ -1,5 +1,6 @@
 const ExtraWork = require("./extraWork.model");
 const User = require("../user/user.model");
+const notificationService = require("../notifications/notification.service");
 
 /*
 |--------------------------------------------------------------------------
@@ -192,6 +193,10 @@ const requestExtraWork = async (userId, reason) => {
     status: "PENDING",
   });
 
+  const employee = await User.findById(userId)
+    .select("name employeeId role email")
+    .lean();
+
   const hrRecipients = await User.find({
     role: {
       $in: ["HR", "SUPER_ADMIN"],
@@ -200,6 +205,15 @@ const requestExtraWork = async (userId, reason) => {
   })
     .select("_id role name email employeeId")
     .lean();
+
+  try {
+    await notificationService.notifyExtraWorkRequested({
+      request,
+      employee,
+    });
+  } catch (_error) {
+    // Do not fail request submission when notification fanout fails.
+  }
 
   return {
     success: true,
@@ -266,6 +280,16 @@ const approveExtraWork = async (requestId, adminId, action) => {
 
     await request.save();
 
+    try {
+      await notificationService.notifyExtraWorkDecision({
+        request,
+        action: "REJECTED",
+        actorId: adminId,
+      });
+    } catch (_error) {
+      // Keep approval flow resilient if notification fails.
+    }
+
     return {
       success: true,
       message: "Request rejected successfully.",
@@ -298,6 +322,16 @@ const approveExtraWork = async (requestId, adminId, action) => {
   request.validTill = validTill;
 
   await request.save();
+
+  try {
+    await notificationService.notifyExtraWorkDecision({
+      request,
+      action: "APPROVED",
+      actorId: adminId,
+    });
+  } catch (_error) {
+    // Keep approval flow resilient if notification fails.
+  }
 
   return {
     success: true,

@@ -283,6 +283,25 @@ const getMyAttendanceDashboard = async (req, res) => {
   }
 };
 
+const reconcileEmployeeAttendanceFromBiometricRange = async (req, res) => {
+  try {
+    const { employeeId, fromDate, toDate } = req.body || {};
+    const result =
+      await attendanceService.reconcileEmployeeAttendanceFromBiometricRange(
+        employeeId,
+        fromDate,
+        toDate
+      );
+
+    return res.status(200).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 module.exports = {
   clockIn,
   clockOut,
@@ -294,6 +313,7 @@ module.exports = {
   getMyAttendanceDashboard,
   getEmployeeAttendance,
   getMonthlyTeamSheet,
+  reconcileEmployeeAttendanceFromBiometricRange,
   manualUpdateAttendance,
   revokeClockOut,
 };

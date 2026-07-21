@@ -17,6 +17,7 @@ const {
   createConversationSchema,
   conversationIdParamSchema,
   messageIdParamSchema,
+  notificationIdParamSchema,
   removeMemberParamSchema,
   fileNameParamSchema,
   updateConversationSchema,
@@ -28,6 +29,7 @@ const {
   forwardMessageSchema,
   presenceQuerySchema,
   conversationAttachmentsQuerySchema,
+  notificationsQuerySchema,
 } = require("./chat.validation");
 
 router.use(auth, observeChatHttp);
@@ -35,6 +37,32 @@ router.use(auth, observeChatHttp);
 router.get(
   "/unread-count",
   chatController.getUnreadCount
+);
+
+router.get(
+  "/notifications",
+  validateRequest({
+    query: notificationsQuerySchema,
+  }),
+  chatController.getMyNotifications
+);
+
+router.get(
+  "/notifications/unread-count",
+  chatController.getNotificationUnreadCount
+);
+
+router.patch(
+  "/notifications/read-all",
+  chatController.markAllNotificationsAsRead
+);
+
+router.patch(
+  "/notifications/:notificationId/read",
+  validateRequest({
+    params: notificationIdParamSchema,
+  }),
+  chatController.markNotificationAsRead
 );
 
 router.get(

@@ -439,8 +439,8 @@ const applyBiometricPunch = async (
     date: dateKey,
   });
 
-  // HR manually marked absent — do not overwrite with biometric punches.
-  if (attendance?.isManuallyUpdated && attendance.status === "ABSENT") {
+  // Never overwrite HR manual corrections with biometric punches.
+  if (attendance?.isManuallyUpdated) {
     return attendance;
   }
 
@@ -1293,7 +1293,7 @@ const syncAttendanceFromBiometricInOut = async (
     const employeeIdKey = String(employee._id);
     let attendance = attendanceByEmployeeId.get(employeeIdKey);
 
-    if (attendance?.isManuallyUpdated && attendance?.status === "ABSENT") {
+    if (attendance?.isManuallyUpdated) {
       continue;
     }
 
@@ -1368,8 +1368,25 @@ const syncAttendanceFromBiometricInOut = async (
 
     const existingPunches = getExistingPunchTimes(attendance);
     let timeline;
+    const dayHasEnded = shouldApplyCheckoutStatus(
+      dateKey,
+      getOfficeTimes(employee, dateKey).officeEnd
+    );
+    const hasValidInOutWindow =
+      biometricClockIn &&
+      biometricClockOut &&
+      biometricClockOut > biometricClockIn;
+    const shouldForceBiometricWindow =
+      dayHasEnded &&
+      hasValidInOutWindow &&
+      canOverrideWithBiometric(attendance, "clockIn") &&
+      canOverrideWithBiometric(attendance, "clockOut");
 
-    if (existingPunches.length > 2) {
+    // Completed historical days should prefer stable In/Out API window over
+    // noisy raw punch streams (odd/misaligned punches can corrupt history).
+    if (shouldForceBiometricWindow) {
+      timeline = derivePunchTimeline([biometricClockIn, biometricClockOut]);
+    } else if (existingPunches.length > 2) {
       timeline = derivePunchTimeline(existingPunches);
     } else {
       const seed = [];
@@ -1612,6 +1629,28 @@ const hydrateAttendancePunchesFromProcessed = async (
   const existingTimes = getExistingPunchTimes(attendanceDoc);
 
   if (processedTimes.length <= existingTimes.length) {
+    return false;
+  }
+
+  const existingClockOut = attendanceDoc.clockOut
+    ? new Date(attendanceDoc.clockOut)
+    : null;
+  const processedLastPunch = processedTimes[processedTimes.length - 1]
+    ? new Date(processedTimes[processedTimes.length - 1])
+    : null;
+  const isProcessedOdd = processedTimes.length % 2 === 1;
+
+  // If attendance already has a valid final clock-out and processed stream is
+  // odd (likely missed a middle return punch), keep current timeline to avoid
+  // regressing clockOut back to null.
+  if (
+    existingClockOut &&
+    !Number.isNaN(existingClockOut.getTime()) &&
+    isProcessedOdd &&
+    processedLastPunch &&
+    !Number.isNaN(processedLastPunch.getTime()) &&
+    processedLastPunch.getTime() <= existingClockOut.getTime()
+  ) {
     return false;
   }
 
@@ -2321,6 +2360,133 @@ const getMonthlyTeamSheet = async (month, year, employeeId = "") => {
   };
 };
 
+const DATE_KEY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
+const getDateKeysBetween = (fromDate, toDate) => {
+  const keys = [];
+  const start = new Date(`${fromDate}T00:00:00${process.env.IST_OFFSET || "+05:30"}`);
+  const end = new Date(`${toDate}T00:00:00${process.env.IST_OFFSET || "+05:30"}`);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+    return keys;
+  }
+
+  const cursor = new Date(start);
+  while (cursor <= end) {
+    keys.push(getDateKeyFromDate(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return keys;
+};
+
+const reconcileEmployeeAttendanceFromBiometricRange = async (
+  employeeId,
+  fromDate,
+  toDate
+) => {
+  const normalizedEmployeeId = String(employeeId || "").trim();
+  const normalizedFromDate = String(fromDate || "").trim();
+  const normalizedToDate = String(toDate || "").trim();
+
+  if (!normalizedEmployeeId) {
+    throw new Error("Employee ID is required");
+  }
+
+  if (
+    !DATE_KEY_REGEX.test(normalizedFromDate) ||
+    !DATE_KEY_REGEX.test(normalizedToDate)
+  ) {
+    throw new Error("Valid fromDate and toDate are required in YYYY-MM-DD format");
+  }
+
+  const dateKeys = getDateKeysBetween(normalizedFromDate, normalizedToDate);
+  if (dateKeys.length === 0) {
+    throw new Error("Invalid date range");
+  }
+
+  const user = await User.findOne({
+    employeeId: normalizedEmployeeId,
+    isActive: true,
+  })
+    .select("employeeId biometricEmpCode name designation department officeTiming")
+    .lean();
+
+  if (!user?._id) {
+    throw new Error("Employee not found");
+  }
+
+  const employeeById = new Map([[String(user._id), user]]);
+  const employeeByCode = new Map();
+  const normalizedCode = normalizeBiometricCode(
+    user.biometricEmpCode || user.employeeId?.replace(/^DOB/i, "")
+  );
+  if (normalizedCode) {
+    employeeByCode.set(normalizedCode, user);
+  }
+
+  const rangeResponse = await fetchBiometricInOutForRange(
+    normalizedFromDate,
+    normalizedToDate
+  );
+
+  if (rangeResponse.error) {
+    throw new Error(rangeResponse.error);
+  }
+
+  const updatedDateKeys = [];
+  for (const dateKey of dateKeys) {
+    const dayRecords = (rangeResponse.recordsByDate?.[dateKey] || []).filter((record) => {
+      const recordCode = normalizeBiometricCode(
+        record?.crmEmployee?.biometricEmpCode || record?.empcode
+      );
+      return Boolean(recordCode) && recordCode === normalizedCode;
+    });
+
+    const beforeRecords = await Attendance.find({
+      employee: user._id,
+      date: dateKey,
+    })
+      .select("clockIn clockOut workingMinutes status totalBreakMinutes punches breaks")
+      .lean();
+    const beforeJson = JSON.stringify(beforeRecords);
+
+    await syncAttendanceFromBiometricInOut(
+      dateKey,
+      dayRecords,
+      employeeById,
+      employeeByCode
+    );
+
+    const afterRecords = await Attendance.find({
+      employee: user._id,
+      date: dateKey,
+    })
+      .select("clockIn clockOut workingMinutes status totalBreakMinutes punches breaks")
+      .lean();
+    const afterJson = JSON.stringify(afterRecords);
+
+    if (beforeJson !== afterJson) {
+      updatedDateKeys.push(dateKey);
+    }
+  }
+
+  return {
+    success: true,
+    employee: {
+      _id: user._id,
+      employeeId: user.employeeId || "",
+      name: user.name || "",
+      biometricEmpCode: user.biometricEmpCode || "",
+    },
+    fromDate: normalizedFromDate,
+    toDate: normalizedToDate,
+    processedDays: dateKeys.length,
+    updatedDays: updatedDateKeys.length,
+    updatedDateKeys,
+  };
+};
+
 const manualUpdateAttendance = async (
   attendanceId,
   body,
@@ -2614,6 +2780,7 @@ module.exports = {
   getMyAttendanceDashboard,
   getEmployeeAttendance,
   getMonthlyTeamSheet,
+  reconcileEmployeeAttendanceFromBiometricRange,
   manualUpdateAttendance,
   revokeClockOut,
   applyBiometricPunch,

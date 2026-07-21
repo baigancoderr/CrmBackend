@@ -2,6 +2,7 @@ const Leave = require("./leave.model");
 const LeaveBalance = require("./leaveBalance.model");
 const User = require("../user/user.model");
 const DailyWorkReport = require("../daily-work-report/dailyWorkReport.model");
+const notificationService = require("../notifications/notification.service");
 
 const {calculateLeaveDays,hasPendingLeave,getMentionUsers,canApproveLeave,} = require("./leave.helper");
 
@@ -361,6 +362,16 @@ const createLeave = async (body,employeeId) => {
         "rejectedBy",
         "name employeeId role"
       );
+
+  try {
+    await notificationService.notifyLeaveRequested({
+      leave,
+      employee: createdLeave?.employeeId,
+      reportingManagerId: reportingManager._id,
+    });
+  } catch (_error) {
+    // Do not fail leave creation when notification fanout fails.
+  }
 
   return createdLeave;
 };
@@ -748,6 +759,16 @@ const approveLeave = async (id,approver) => {
 
   await leave.save();
 
+  try {
+    await notificationService.notifyLeaveDecision({
+      leave,
+      action: "APPROVED",
+      actorId: approverId,
+    });
+  } catch (_error) {
+    // Keep leave approval resilient if notification fails.
+  }
+
   return await Leave.findById(
     leave._id
   )
@@ -802,6 +823,17 @@ const rejectLeave = async (id,reason,approver) => {
   leave.updatedBy = approverId;
 
   await leave.save();
+
+  try {
+    await notificationService.notifyLeaveDecision({
+      leave,
+      action: "REJECTED",
+      actorId: approverId,
+      reason: leave.rejectReason,
+    });
+  } catch (_error) {
+    // Keep leave rejection resilient if notification fails.
+  }
 
   return await Leave.findById(
     leave._id

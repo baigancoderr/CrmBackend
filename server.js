@@ -5,6 +5,7 @@ const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
+const mongoose = require("mongoose");
 const { Server } = require("socket.io");
 const { createAdapter } = require("@socket.io/redis-adapter");
 
@@ -37,6 +38,7 @@ const defaultAllowedOrigins = [
   "https://newofficebackend.fastsolution.cloud",
   "https://manageteam.fastsolution.cloud",
   "https://manageteam-api.fastsolution.cloud",
+  "https://officecrm.furfoori.com/",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
   "http://localhost:8080",
@@ -58,6 +60,7 @@ const isLocalDevOrigin = (origin) =>
   );
 
 const isProduction = process.env.NODE_ENV === "production";
+const isMongoConnected = () => mongoose.connection.readyState === 1;
 
 const corsOptions = {
   origin: isProduction
@@ -136,6 +139,13 @@ app.use(errorMiddleware);
       2 * 60 * 1000;
 
     const runAttendanceSeed = async () => {
+      if (!isMongoConnected()) {
+        console.warn(
+          "[Attendance Seed] Skipped: MongoDB is not connected"
+        );
+        return;
+      }
+
       try {
         const result =
           await ensureDailyAttendanceRecords();
@@ -151,6 +161,13 @@ app.use(errorMiddleware);
     };
 
     const runBiometricSync = async () => {
+      if (!isMongoConnected()) {
+        console.warn(
+          "[Biometric Sync] Skipped: MongoDB is not connected"
+        );
+        return;
+      }
+
       try {
         const result = await syncBiometricPunches();
         console.log(

@@ -8,6 +8,7 @@ const {
   logAuditEvent,
   incrementMetric,
 } = require("../../utils/observability");
+const chatNotificationService = require("./chatNotification.service");
 
 // Group create/manage allowed only for these system roles.
 const GROUP_MANAGER_ROLES = [
@@ -1175,6 +1176,18 @@ const sendMessage = async (
     });
   }
 
+  try {
+    await chatNotificationService.createMessageNotifications({
+      io,
+      conversation,
+      message: savedMessage,
+      sender: user,
+      recipientIds: activeMemberIds,
+    });
+  } catch (_error) {
+    // Do not fail message send when notification fanout fails.
+  }
+
   // Do not block send response on metrics
   incrementMetric("chat_message_sent", {
     senderId: user.id.toString(),
@@ -1396,6 +1409,16 @@ const markConversationAsRead = async (
       },
     }
   );
+
+  try {
+    await chatNotificationService.markConversationNotificationsAsRead(
+      conversationId,
+      userId,
+      io
+    );
+  } catch (_error) {
+    // Keep core chat read flow resilient if notification sync fails.
+  }
 
   if (io) {
     io.to(`conversation:${conversationId}`).emit(

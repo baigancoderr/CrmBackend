@@ -44,6 +44,13 @@ router.get(
   attendanceController.getMonthlyTeamSheet
 );
 
+router.post(
+  "/reconcile-biometric-range",
+  authMiddleware,
+  roleMiddleware(...ADMIN_ROLES),
+  attendanceController.reconcileEmployeeAttendanceFromBiometricRange
+);
+
 router.patch("/manual-update/:id", authMiddleware, roleMiddleware(...ADMIN_ROLES), attendanceController.manualUpdateAttendance);
 router.patch("/revoke-clock-out/:id", authMiddleware, roleMiddleware(...ADMIN_ROLES), attendanceController.revokeClockOut);
 

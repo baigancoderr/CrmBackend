@@ -1,4 +1,5 @@
 const chatService = require("./chat.service");
+const chatNotificationService = require("./chatNotification.service");
 
 const getIo = () => chatService.getSocketIo();
 
@@ -387,6 +388,86 @@ const getUnreadCount = async (req, res) => {
   }
 };
 
+const getMyNotifications = async (req, res) => {
+  try {
+    const data = await chatNotificationService.getMyNotifications(
+      req.user.id,
+      req.query
+    );
+
+    return res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const getNotificationUnreadCount = async (req, res) => {
+  try {
+    const unreadCount = await chatNotificationService.getUnreadCount(
+      req.user.id
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        unreadCount,
+      },
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const markNotificationAsRead = async (req, res) => {
+  try {
+    const data = await chatNotificationService.markNotificationAsRead(
+      req.params.notificationId,
+      req.user.id,
+      getIo()
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Notification marked as read",
+      data,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const markAllNotificationsAsRead = async (req, res) => {
+  try {
+    const data = await chatNotificationService.markAllNotificationsAsRead(
+      req.user.id,
+      getIo()
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "All notifications marked as read",
+      data,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 const getChatFile = async (req, res) => {
   try {
     const filePath =
@@ -510,6 +591,10 @@ module.exports = {
   deleteMessage,
   markConversationAsRead,
   getUnreadCount,
+  getMyNotifications,
+  getNotificationUnreadCount,
+  markNotificationAsRead,
+  markAllNotificationsAsRead,
   getChatFile,
   getUsersPresence,
   forwardMessage,
