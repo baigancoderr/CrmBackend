@@ -3,6 +3,11 @@ const LeaveBalance = require("./leaveBalance.model");
 const User = require("../user/user.model");
 const DailyWorkReport = require("../daily-work-report/dailyWorkReport.model");
 const notificationService = require("../notifications/notification.service");
+const {
+  sendLeaveAppliedEmail,
+  sendLeaveApprovedEmail,
+  sendLeaveRejectedEmail,
+} = require("../../utils/email.service");
 
 const {calculateLeaveDays,hasPendingLeave,getMentionUsers,canApproveLeave,} = require("./leave.helper");
 
@@ -268,7 +273,7 @@ const createLeave = async (body,employeeId) => {
     }
   }
 
-  const employee = await User.findById(employeeId).select("joiningDate manager");
+  const employee = await User.findById(employeeId).select("joiningDate manager teamLeader");
   if (!employee) {
     throw new Error("Employee not found.");
   }
@@ -372,6 +377,20 @@ const createLeave = async (body,employeeId) => {
   } catch (_error) {
     // Do not fail leave creation when notification fanout fails.
   }
+
+  // ── Email notification ───────────────────────────────────────────────────
+  // Runs independently — leave is already saved, failure only logs.
+  try {
+    await sendLeaveAppliedEmail({
+      leave,
+      employee:            createdLeave?.employeeId,   // populated: { name, employeeId }
+      reportingManagerId:  reportingManager._id,
+      teamLeaderId:        employee.teamLeader ?? null, // from User.findById above
+    });
+  } catch (_err) {
+    console.error("[Leave] sendLeaveAppliedEmail error:", _err.message);
+  }
+  // ────────────────────────────────────────────────────────────────────────
 
   return createdLeave;
 };
@@ -769,6 +788,23 @@ const approveLeave = async (id,approver) => {
     // Keep leave approval resilient if notification fails.
   }
 
+  // ── Email notification ───────────────────────────────────────────────────
+  try {
+    // Fetch approver name to include in the email
+    const approver = await User.findById(approverId).select("name").lean();
+    const populatedForEmail = await Leave.findById(leave._id)
+      .populate("employeeId", "name employeeId teamLeader")
+      .lean();
+
+    await sendLeaveApprovedEmail({
+      leave:          populatedForEmail,
+      approvedByName: approver?.name || "Manager",
+    });
+  } catch (_err) {
+    console.error("[Leave] sendLeaveApprovedEmail error:", _err.message);
+  }
+  // ────────────────────────────────────────────────────────────────────────
+
   return await Leave.findById(
     leave._id
   )
@@ -834,6 +870,22 @@ const rejectLeave = async (id,reason,approver) => {
   } catch (_error) {
     // Keep leave rejection resilient if notification fails.
   }
+
+  // ── Email notification ───────────────────────────────────────────────────
+  try {
+    const rejector = await User.findById(approverId).select("name").lean();
+    const populatedForEmail = await Leave.findById(leave._id)
+      .populate("employeeId", "name employeeId teamLeader")
+      .lean();
+
+    await sendLeaveRejectedEmail({
+      leave:          populatedForEmail,
+      rejectedByName: rejector?.name || "Manager",
+    });
+  } catch (_err) {
+    console.error("[Leave] sendLeaveRejectedEmail error:", _err.message);
+  }
+  // ────────────────────────────────────────────────────────────────────────
 
   return await Leave.findById(
     leave._id
