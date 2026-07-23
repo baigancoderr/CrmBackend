@@ -1,5 +1,6 @@
 const DailyWorkReport = require("./dailyWorkReport.model");
 const User = require("../user/user.model");
+const notificationService = require("../notifications/notification.service");
 
 const REVIEWER_ROLES = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL"];
 const REPORTING_MANAGER_ROLES = ["PROJECT_MANAGER", "TL", "HR"];
@@ -31,6 +32,16 @@ const getTodayDateString = () => {
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const getRelativeDateString = (offsetDays) => {
+  const date = new Date();
+  date.setDate(date.getDate() + Number(offsetDays || 0));
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 };
 
@@ -143,6 +154,22 @@ const getMyPrefillDetails = async (userId) => {
   // No assigned PM/TL/HR manager — default to an active HR user.
   if (!managerRecord) {
     managerRecord = await getDefaultHrManager(userId);
+  }
+
+  const yesterdayDate = getRelativeDateString(-1);
+  const hasYesterdayReport = await DailyWorkReport.exists({
+    employee: userId,
+    reportDate: yesterdayDate,
+  });
+
+  if (!hasYesterdayReport) {
+    const todayDate = getTodayDateString();
+
+    await notificationService.notifyDailyWorkReportReminder({
+      recipientId: userId,
+      reportDate: yesterdayDate,
+      reminderDate: todayDate,
+    });
   }
 
   return {

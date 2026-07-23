@@ -144,10 +144,6 @@ const calculateAttendanceMetrics = (
     halfDayCutoffTime,
   } = getOfficeTimes(user, dateKey);
 
-  const totalBreakMinutes = Math.max(
-    0,
-    Number(options.totalBreakMinutes) || 0
-  );
   // Mid-day break/out punches must not flip status to Half Day / Early Leave.
   const applyCheckoutStatus = options.applyCheckoutStatus !== false;
 
@@ -175,7 +171,6 @@ const calculateAttendanceMetrics = (
     workingMinutes = Math.floor(
       Math.max(clockOutDate - effectiveWorkStart, 0) / 60000
     );
-    workingMinutes = Math.max(workingMinutes - totalBreakMinutes, 0);
 
     // Provisional mid-day outs (break) should not create shortfall / early-leave metrics.
     if (applyCheckoutStatus) {
@@ -227,6 +222,11 @@ const shouldApplyCheckoutStatus = (dateKey, officeEnd) => {
 const resolveShiftState = (attendance, user, dateKey) => {
   if (!attendance?.clockIn) {
     return "NOT_STARTED";
+  }
+
+  // Manual flow is strictly Punch In -> Punch Out; no break state.
+  if (attendance?.clockOut && attendance?.clockOutSource === "MANUAL") {
+    return "COMPLETED";
   }
 
   const punchCount =
@@ -371,7 +371,7 @@ const applyTimelineMetrics = (
       0,
       Math.floor(
         (lastPunch.getTime() - timeline.clockIn.getTime()) / 60000
-      ) - timeline.totalBreakMinutes
+      )
     );
   }
 };
@@ -2088,15 +2088,20 @@ const getMyAttendanceDashboard = async (
   const biometricToday =
     biometricInOutResponse.records[0] || null;
 
-  const shiftState = resolveShiftState(
+  const derivedShiftState = resolveShiftState(
     todayAttendance,
     user,
     today
   );
   const { officeEnd } = getOfficeTimes(user, today);
   const hasClockIn = Boolean(todayAttendance?.clockIn);
-  // UI: COMPLETED = day done; ON_BREAK must not look like final checkout.
-  const hasClockOut = shiftState === "COMPLETED";
+  // Treat persisted clock-out as final checkout for employee dashboards.
+  const hasClockOut = Boolean(todayAttendance?.clockOut);
+  const shiftState = !hasClockIn
+    ? "NOT_STARTED"
+    : hasClockOut
+      ? "COMPLETED"
+      : derivedShiftState;
   const isPresent = Boolean(
     todayAttendance &&
       ["PRESENT", "LATE", "HALF_DAY", "EARLY_LEAVE"].includes(
