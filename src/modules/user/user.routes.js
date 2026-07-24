@@ -9,6 +9,7 @@ const roleMiddleware = require("../../middleware/role.middleware");
 const upload = require("../../middleware/upload.middleware");
 
 const ADMIN_ROLES = ["SUPER_ADMIN", "HR"];
+const MANAGER_ROLES = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL"];
 
 router.post("/create", authMiddleware, userController.createUser);
 
@@ -30,7 +31,7 @@ router.put("/profile",authMiddleware,upload.single("profilePhoto"),userControlle
 router.get(
   "/",
   authMiddleware,
-  roleMiddleware(...ADMIN_ROLES),
+  roleMiddleware(...MANAGER_ROLES),
   userController.getAllUsers
 );
 

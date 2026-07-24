@@ -123,6 +123,8 @@ const userSchema = new mongoose.Schema(
                 "TL",
                 "ACCOUNTANT",
                 "EMPLOYEE",
+                "QA",
+                "CLIENT",
             ],
             default: "EMPLOYEE",
         },

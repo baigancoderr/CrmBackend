@@ -136,12 +136,18 @@ const sendLeaveAppliedEmail = async ({ leave, employee, reportingManagerId, team
       teamLeaderId ? getUserEmail(teamLeaderId) : Promise.resolve(null),
     ]);
 
-    // Build deduplicated recipient list
+    // Get employee's own email to exclude them from recipients
+    const employeeEmail = employee?.email || (await getUserEmail(leave.employeeId));
+
+    // Build deduplicated recipient list — EXCLUDE the employee who applied
     const toSet = new Set([
       ...adminEmails,
       managerEmail,
-      tlEmail,           // null if no TL assigned — filtered below
+      tlEmail,
     ].filter(Boolean));
+
+    // Remove employee's own email (they shouldn't get their own application notification)
+    if (employeeEmail) toSet.delete(employeeEmail);
 
     if (!toSet.size) {
       console.warn("[EmailService] sendLeaveAppliedEmail: no recipients resolved.");

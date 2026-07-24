@@ -1,0 +1,23 @@
+const express = require("express");
+const authMiddleware = require("../../middleware/auth.middleware");
+const areaDocumentUpload = require("../../middleware/areaDocument.upload.middleware");
+const { validateCreateArea, validateUpdateArea } = require("./projectArea.validation");
+const {
+  createArea,
+  listAreas,
+  updateArea,
+  assignTeamLead,
+  uploadAreaDocuments,
+  listAreaDocuments,
+} = require("./projectArea.controller");
+
+const router = express.Router({ mergeParams: true });
+
+router.post("/", authMiddleware, areaDocumentUpload.array("documents", 10), validateCreateArea, createArea);
+router.get("/", authMiddleware, listAreas);
+router.patch("/:areaId", authMiddleware, validateUpdateArea, updateArea);
+router.post("/:areaId/assign-lead", authMiddleware, assignTeamLead);
+router.post("/:areaId/documents", authMiddleware, areaDocumentUpload.array("documents", 10), uploadAreaDocuments);
+router.get("/:areaId/documents", authMiddleware, listAreaDocuments);
+
+module.exports = router;

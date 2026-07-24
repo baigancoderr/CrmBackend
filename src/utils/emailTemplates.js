@@ -106,7 +106,7 @@ const shell = (preheader, accentColor, logoCid, body) => `<!DOCTYPE html>
       <td align="center" style="padding:28px 32px 20px;background:${BG_CARD};
                                 border-bottom:1px solid ${BORDER};">
         <img src="cid:${logoCid}" width="120" height="28"
-             alt="Office CRM" style="height:28px;width:auto;margin:0 auto;"/>
+             alt="Office CRM" style="height:auto;max-width:120px;width:100%;display:block;margin:0 auto;"/>
         <p style="margin:8px 0 0;font-size:11px;color:${TXT_MUTED};
                   letter-spacing:.8px;text-transform:uppercase;font-family:${FONT};">
           Leave Management System
