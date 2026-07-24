@@ -1,5 +1,6 @@
 const AppNotification = require("./notification.model");
 const User = require("../user/user.model");
+const pushService = require("../push/push.service");
 
 const USER_FIELDS = "name employeeId role profilePhoto";
 
@@ -79,6 +80,27 @@ const emitNewNotification = async (userId, notification) => {
   await emitUnreadCount(userId);
 };
 
+const buildWebPushPayload = (notification = {}) => {
+  const link =
+    typeof notification.link === "string" && notification.link.trim()
+      ? notification.link.trim()
+      : "/index";
+
+  return {
+    title: notification.title || "Digital One Box CRM",
+    body: notification.message || "You have a new update.",
+    url: link,
+    tag: `app-${notification.type || "info"}-${notification.entityId || "general"}`,
+    data: {
+      type: notification.type || "INFO",
+      entityType: notification.entityType || null,
+      entityId: notification.entityId || null,
+      link,
+      meta: notification.meta || {},
+    },
+  };
+};
+
 const createNotification = async ({
   recipientId,
   actorId = null,
@@ -113,6 +135,12 @@ const createNotification = async ({
     .lean();
 
   await emitNewNotification(recipientId, populated);
+
+  await pushService.sendPushToUsers(
+    [recipientId],
+    buildWebPushPayload(populated)
+  );
+
   return formatNotification(populated);
 };
 
@@ -162,6 +190,17 @@ const createNotificationsForRecipients = async ({
 
   await Promise.all(
     populated.map((item) => emitNewNotification(item.recipient, item))
+  );
+
+  const payloadByRecipient = new Map();
+  populated.forEach((item) => {
+    payloadByRecipient.set(String(item.recipient), buildWebPushPayload(item));
+  });
+
+  await Promise.all(
+    [...payloadByRecipient.entries()].map(([recipientId, payload]) =>
+      pushService.sendPushToUsers([recipientId], payload)
+    )
   );
 
   return populated.map(formatNotification).filter(Boolean);
@@ -354,6 +393,43 @@ const notifyLeaveDecision = async ({ leave, action, actorId, reason = "" }) => {
   });
 };
 
+const notifyDailyWorkReportReminder = async ({
+  recipientId,
+  reportDate,
+  reminderDate,
+}) => {
+  if (!recipientId || !reportDate || !reminderDate) {
+    return null;
+  }
+
+  const existingReminder = await AppNotification.findOne({
+    recipient: recipientId,
+    type: "DAILY_WORK_REPORT_REMINDER",
+    "meta.reportDate": reportDate,
+    "meta.reminderDate": reminderDate,
+  })
+    .select("_id")
+    .lean();
+
+  if (existingReminder?._id) {
+    return null;
+  }
+
+  return createNotification({
+    recipientId,
+    type: "DAILY_WORK_REPORT_REMINDER",
+    title: "Daily work reminder",
+    message: "Please update yesterday's daily work.",
+    status: "INFO",
+    entityType: "DAILY_WORK_REPORT",
+    link: "/daily-work-report",
+    meta: {
+      reportDate,
+      reminderDate,
+    },
+  });
+};
+
 module.exports = {
   createNotification,
   createNotificationsForRecipients,
@@ -365,5 +441,6 @@ module.exports = {
   notifyExtraWorkDecision,
   notifyLeaveRequested,
   notifyLeaveDecision,
+  notifyDailyWorkReportReminder,
   formatNotification,
 };

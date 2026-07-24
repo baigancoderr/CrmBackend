@@ -1,4 +1,5 @@
 const ChatNotification = require("./chatNotification.model");
+const pushService = require("../push/push.service");
 
 const USER_FIELDS = "name profilePhoto employeeId";
 const CONVERSATION_FIELDS = "type name photo";
@@ -109,6 +110,18 @@ const createMessageNotifications = async ({
     conversation?.type === "GROUP"
       ? `${sender?.name || "Someone"} in ${conversation?.name || "group"}`
       : sender?.name || "New message";
+  const webPushPayload = {
+    title,
+    body: preview || "You have a new message.",
+    url: `/application/chat?conversation=${conversationId}`,
+    tag: `chat-${conversationId}`,
+    data: {
+      type: "CHAT_MESSAGE",
+      conversationId,
+      messageId: message._id?.toString() || "",
+      senderId,
+    },
+  };
 
   const docs = cleanRecipients.map((recipientId) => ({
     recipient: recipientId,
@@ -139,6 +152,8 @@ const createMessageNotifications = async ({
       unreadCount,
     });
   }
+
+  await pushService.sendPushToUsers(cleanRecipients, webPushPayload);
 };
 
 const getMyNotifications = async (userId, query = {}) => {

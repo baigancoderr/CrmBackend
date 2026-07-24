@@ -20,6 +20,8 @@ router.use("/chat", require("../modules/chat/chat.routes"));
 
 router.use("/notifications", require("../modules/notifications/notification.routes"));
 
+router.use("/push", require("../modules/push/push.routes"));
+
 router.use("/notes", require("../modules/notes/notes.routes"));
 router.use("/folders", require("../modules/notes/folder.routes"));
 
