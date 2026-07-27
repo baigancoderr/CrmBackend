@@ -1,10 +1,11 @@
-// Punch timeline: counting only (no action correction).
-// Odd punches = currently in; even = currently out.
-// Breaks = paired middle punches; first = clockIn, last (when even) = clockOut.
+// Simple punch model: first punch = clock in, second+ last punch = clock out.
+// Break / odd-even mid-day pairing intentionally disabled.
 
 const MIN_PUNCH_GAP_MS = 2 * 60 * 1000;
 
-const normalizePunchTimes = (punchTimes = []) => {
+const normalizePunchTimes = (punchTimes = [], options = {}) => {
+  const minGapMs =
+    typeof options.minGapMs === "number" ? options.minGapMs : MIN_PUNCH_GAP_MS;
   const sorted = [...punchTimes]
     .map((value) => new Date(value))
     .filter((date) => !Number.isNaN(date.getTime()))
@@ -16,7 +17,7 @@ const normalizePunchTimes = (punchTimes = []) => {
     const last = unique[unique.length - 1];
 
     // Ignore accidental double punches within the gap window.
-    if (!last || punch.getTime() - last.getTime() >= MIN_PUNCH_GAP_MS) {
+    if (!last || punch.getTime() - last.getTime() >= minGapMs) {
       unique.push(punch);
     }
   });
@@ -24,8 +25,8 @@ const normalizePunchTimes = (punchTimes = []) => {
   return unique;
 };
 
-const derivePunchTimeline = (punchTimes = []) => {
-  const punches = normalizePunchTimes(punchTimes);
+const derivePunchTimeline = (punchTimes = [], options = {}) => {
+  const punches = normalizePunchTimes(punchTimes, options);
 
   if (punches.length === 0) {
     return {
@@ -40,45 +41,26 @@ const derivePunchTimeline = (punchTimes = []) => {
   }
 
   const clockIn = punches[0];
-  const isCurrentlyIn = punches.length % 2 === 1;
-  const clockOut = isCurrentlyIn ? null : punches[punches.length - 1];
+  // 1st punch = in; any later punch = out (latest wins as final clock out).
+  const clockOut = punches.length >= 2 ? punches[punches.length - 1] : null;
+
+  // Keep only in + out — no mid-day break punches in the stored timeline.
+  const storedPunches = clockOut ? [clockIn, clockOut] : [clockIn];
+
+  // Break pairing removed — keep empty for schema compatibility.
+  // Odd/even mid punches previously counted as break windows here.
   const breaks = [];
-
-  // Pair middle punches for break counting only.
-  // Even day: last punch is day clock-out, so pairs stop before it.
-  // Odd day: currently in, so pairs use all middle punches.
-  const lastBreakIndex = isCurrentlyIn
-    ? punches.length - 1
-    : punches.length - 2;
-
-  for (let index = 1; index + 1 <= lastBreakIndex; index += 2) {
-    const start = punches[index];
-    const end = punches[index + 1];
-    const minutes = Math.max(
-      0,
-      Math.floor((end.getTime() - start.getTime()) / 60000)
-    );
-
-    breaks.push({
-      start,
-      end,
-      minutes,
-    });
-  }
-
-  const totalBreakMinutes = breaks.reduce(
-    (sum, item) => sum + item.minutes,
-    0
-  );
+  const totalBreakMinutes = 0;
+  const isCurrentlyIn = !clockOut;
 
   return {
-    punches,
+    punches: storedPunches,
     clockIn,
     clockOut,
     breaks,
     totalBreakMinutes,
     isCurrentlyIn,
-    isCurrentlyOut: !isCurrentlyIn,
+    isCurrentlyOut: Boolean(clockOut),
   };
 };
 
