@@ -20,6 +20,8 @@ const GROUP_MANAGER_ROLES = [
 const USER_POPULATE_FIELDS =
   "name employeeId role designation department profilePhoto";
 
+const LIST_USER_FIELDS = "name profilePhoto";
+
 const DRAWER_USER_FIELDS =
   "name employeeId role designation department profilePhoto email phone";
 
@@ -157,6 +159,13 @@ const populateConversation = (query) => {
     .populate("members.user", USER_POPULATE_FIELDS)
     .populate("lastMessage.sender", USER_POPULATE_FIELDS)
     .populate("deletedBy", USER_POPULATE_FIELDS);
+};
+
+// Inbox list only needs DM peer + lastMessage preview — skip heavy populates.
+const populateConversationList = (query) => {
+  return query
+    .populate("members.user", LIST_USER_FIELDS)
+    .populate("lastMessage.sender", LIST_USER_FIELDS);
 };
 
 const populateMessage = (query) => {
@@ -337,7 +346,18 @@ const recomputeUnreadCounters = async (conversationId) => {
   }
 };
 
-const formatConversation = async (conversation, userId) => {
+const formatConversation = async (
+  conversation,
+  userId,
+  options = {}
+) => {
+  const {
+    // List path: use embedded lastMessage (no N+1 Message.findOne).
+    resolveVisibleLastMessage = true,
+    // List path: return only fields the inbox UI needs.
+    slim = false,
+  } = options;
+
   const member = getActiveMember(conversation, userId);
   const unreadCount = member
     ? typeof member.unreadCount === "number"
@@ -367,17 +387,39 @@ const formatConversation = async (conversation, userId) => {
     }
   }
 
-  const visibleLastMessage = await getVisibleLastMessageForUser(
-    conversation._id,
-    userId
-  );
+  const lastMessage = resolveVisibleLastMessage
+    ? await getVisibleLastMessageForUser(conversation._id, userId)
+    : {
+        text: conversation.lastMessage?.text || "",
+        sender: conversation.lastMessage?.sender || null,
+        sentAt: conversation.lastMessage?.sentAt || null,
+      };
+
+  if (slim) {
+    return {
+      _id: conversation._id,
+      type: conversation.type,
+      name: conversation.name,
+      description: conversation.description,
+      photo: conversation.photo,
+      displayName,
+      displayPhoto,
+      otherUserId,
+      lastMessage,
+      unreadCount,
+      myRole: member ? member.role : null,
+      lastReadAt: member ? member.lastReadAt : null,
+      updatedAt: conversation.updatedAt,
+      createdAt: conversation.createdAt,
+    };
+  }
 
   return {
     ...conversation,
     displayName,
     displayPhoto,
     otherUserId,
-    lastMessage: visibleLastMessage,
+    lastMessage,
     unreadCount,
     myRole: member ? member.role : null,
     lastReadAt: member ? member.lastReadAt : null,
@@ -576,7 +618,7 @@ const getMyConversations = async (userId, query = {}, userRole = "") => {
     : buildConversationQueryForUser(userId);
 
   const [conversations, totalRecords] = await Promise.all([
-    populateConversation(
+    populateConversationList(
       Conversation.find(filter)
         .sort({ "lastMessage.sentAt": -1, updatedAt: -1 })
         .skip(skip)
@@ -587,7 +629,10 @@ const getMyConversations = async (userId, query = {}, userRole = "") => {
 
   const formattedConversations = await Promise.all(
     conversations.map((conversation) =>
-      formatConversation(conversation.toObject(), userId)
+      formatConversation(conversation.toObject(), userId, {
+        resolveVisibleLastMessage: false,
+        slim: true,
+      })
     )
   );
 
@@ -1057,16 +1102,22 @@ const getMessages = async (
     }
   }
 
-  const messages = await populateMessage(
+  const fetchedMessages = await populateMessage(
     Message.find(filter)
       .sort({ createdAt: -1 })
-      .limit(limit)
+      .limit(limit + 1)
   );
+
+  const hasMore = fetchedMessages.length > limit;
+  const pageMessages = hasMore
+    ? fetchedMessages.slice(0, limit)
+    : fetchedMessages;
 
   return {
     conversationId,
     limit,
-    data: messages.reverse(),
+    hasMore,
+    data: pageMessages.reverse(),
   };
 };
 

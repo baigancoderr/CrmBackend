@@ -224,31 +224,12 @@ const resolveShiftState = (attendance, user, dateKey) => {
     return "NOT_STARTED";
   }
 
-  // Manual flow is strictly Punch In -> Punch Out; no break state.
-  if (attendance?.clockOut && attendance?.clockOutSource === "MANUAL") {
+  // Simple model: clock in + clock out = day done. No mid-day break state.
+  if (attendance?.clockOut) {
     return "COMPLETED";
   }
 
-  const punchCount =
-    Array.isArray(attendance.punches) && attendance.punches.length > 0
-      ? attendance.punches.length
-      : attendance.clockOut
-        ? 2
-        : 1;
-
-  // Odd = inside office; even = out (break or day end).
-  if (punchCount % 2 === 1) {
-    return "ON_SHIFT";
-  }
-
-  const { officeEnd } = getOfficeTimes(user, dateKey);
-  const today = getTodayDateKey();
-
-  if (dateKey < today || new Date() >= officeEnd) {
-    return "COMPLETED";
-  }
-
-  return "ON_BREAK";
+  return "ON_SHIFT";
 };
 
 const getExistingPunchTimes = (attendance) => {
@@ -291,47 +272,82 @@ const applyTimelineMetrics = (
   attendance.punches = timeline.punches;
   attendance.breaks = timeline.breaks;
   attendance.totalBreakMinutes = timeline.totalBreakMinutes;
-  attendance.clockIn = timeline.clockIn;
-  attendance.clockOut = timeline.clockOut;
 
-  if (timeline.clockIn) {
-    attendance.clockInSource = source;
+  // Preserve employee/HR manual timestamps when present.
+  if (
+    previousClockIn &&
+    attendance.clockInSource === "MANUAL" &&
+    source !== "MANUAL"
+  ) {
+    attendance.clockIn = previousClockIn;
+  } else {
+    attendance.clockIn = timeline.clockIn;
   }
 
-  if (timeline.clockOut) {
-    attendance.clockOutSource = source;
+  if (
+    previousClockOut &&
+    attendance.clockOutSource === "MANUAL" &&
+    source !== "MANUAL"
+  ) {
+    attendance.clockOut = previousClockOut;
+  } else {
+    attendance.clockOut = timeline.clockOut;
+  }
+
+  if (attendance.clockIn) {
+    if (
+      !(
+        attendance.clockInSource === "MANUAL" &&
+        previousClockIn &&
+        source !== "MANUAL"
+      )
+    ) {
+      attendance.clockInSource = source;
+    }
+  }
+
+  if (attendance.clockOut) {
+    if (
+      !(
+        attendance.clockOutSource === "MANUAL" &&
+        previousClockOut &&
+        source !== "MANUAL"
+      )
+    ) {
+      attendance.clockOutSource = source;
+    }
   }
 
   // Keep HR/audit trail light: only first in + latest out events.
   if (
-    timeline.clockIn &&
+    attendance.clockIn &&
     (!previousClockIn ||
-      timeline.clockIn.getTime() !== previousClockIn.getTime())
+      new Date(attendance.clockIn).getTime() !== previousClockIn.getTime())
   ) {
     addPunchEvent(attendance, {
       action: "CLOCK_IN",
-      source,
-      time: timeline.clockIn,
+      source: attendance.clockInSource || source,
+      time: attendance.clockIn,
       by: eventBy,
       note:
-        source === "BIOMETRIC"
+        (attendance.clockInSource || source) === "BIOMETRIC"
           ? "Biometric clock in"
           : "Manual clock in by employee",
     });
   }
 
   if (
-    timeline.clockOut &&
+    attendance.clockOut &&
     (!previousClockOut ||
-      timeline.clockOut.getTime() !== previousClockOut.getTime())
+      new Date(attendance.clockOut).getTime() !== previousClockOut.getTime())
   ) {
     addPunchEvent(attendance, {
       action: "CLOCK_OUT",
-      source,
-      time: timeline.clockOut,
+      source: attendance.clockOutSource || source,
+      time: attendance.clockOut,
       by: eventBy,
       note:
-        source === "BIOMETRIC"
+        (attendance.clockOutSource || source) === "BIOMETRIC"
           ? "Biometric clock out"
           : "Manual clock out by employee",
     });
@@ -339,12 +355,12 @@ const applyTimelineMetrics = (
 
   const { officeEnd } = getOfficeTimes(user, dateKey);
   const applyCheckoutStatus =
-    Boolean(timeline.clockOut) &&
+    Boolean(attendance.clockOut) &&
     shouldApplyCheckoutStatus(dateKey, officeEnd);
 
   const metrics = calculateAttendanceMetrics(
-    timeline.clockIn,
-    timeline.clockOut,
+    attendance.clockIn,
+    attendance.clockOut,
     user,
     dateKey,
     {
@@ -362,15 +378,15 @@ const applyTimelineMetrics = (
 
   // While still on shift (odd punches), store net worked so far from last punch.
   if (
-    !timeline.clockOut &&
-    timeline.clockIn &&
+    !attendance.clockOut &&
+    attendance.clockIn &&
     timeline.punches.length > 0
   ) {
     const lastPunch = timeline.punches[timeline.punches.length - 1];
     attendance.workingMinutes = Math.max(
       0,
       Math.floor(
-        (lastPunch.getTime() - timeline.clockIn.getTime()) / 60000
+        (lastPunch.getTime() - new Date(attendance.clockIn).getTime()) / 60000
       )
     );
   }
@@ -419,6 +435,51 @@ const addPunchEvent = (attendance, event) => {
   }
 };
 
+const wasClockOutRevoked = (attendance) => {
+  if (!attendance || attendance.clockOut) {
+    return false;
+  }
+
+  const events = Array.isArray(attendance.punchEvents)
+    ? attendance.punchEvents
+    : [];
+
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const note = String(events[i]?.note || "").toLowerCase();
+    if (note.includes("clock out revoked")) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+// Fully lock only when biometric must not touch the day at all.
+// Empty clockIn/clockOut still fill from biometric; set MANUAL values stay.
+const hasProtectedManualPunch = (attendance) => {
+  if (!attendance) {
+    return false;
+  }
+
+  if (
+    attendance.isManuallyUpdated &&
+    (attendance.status === "ABSENT" || attendance.status === "LEAVE")
+  ) {
+    return true;
+  }
+
+  if (
+    attendance.clockInSource === "MANUAL" &&
+    attendance.clockIn &&
+    attendance.clockOutSource === "MANUAL" &&
+    attendance.clockOut
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
 const applyBiometricPunch = async (
   userId,
   punchDateTime,
@@ -439,12 +500,25 @@ const applyBiometricPunch = async (
     date: dateKey,
   });
 
-  // Never overwrite HR manual corrections with biometric punches.
-  if (attendance?.isManuallyUpdated) {
+  // Skip only fully locked days (manual ABSENT/LEAVE, or both punches manual).
+  if (hasProtectedManualPunch(attendance)) {
     return attendance;
   }
 
   const existingPunches = getExistingPunchTimes(attendance);
+  const willSetClockIn = existingPunches.length === 0 && !attendance?.clockIn;
+  const willSetClockOut =
+    Boolean(attendance?.clockIn) || existingPunches.length >= 1;
+
+  // Fill empty slots only; do not restore a revoked clock-out.
+  if (willSetClockIn && !canOverrideWithBiometric(attendance, "clockIn")) {
+    return attendance;
+  }
+
+  if (willSetClockOut && !canOverrideWithBiometric(attendance, "clockOut")) {
+    return attendance;
+  }
+
   const timeline = derivePunchTimeline([
     ...existingPunches,
     punchDateTime,
@@ -505,7 +579,7 @@ const clockIn = async (userId) => {
   }
 
   const now = new Date();
-  const timeline = derivePunchTimeline([now]);
+  const timeline = derivePunchTimeline([now], { minGapMs: 0 });
 
   let attendance;
 
@@ -527,6 +601,10 @@ const clockIn = async (userId) => {
     existingAttendance.biometricEmpCode =
       user.biometricEmpCode ||
       existingAttendance.biometricEmpCode;
+    // Protect employee manual punches from biometric sync overwrite.
+    existingAttendance.isManuallyUpdated = true;
+    existingAttendance.updateReason =
+      existingAttendance.updateReason || "Employee manual clock in";
 
     await existingAttendance.save();
     attendance = existingAttendance;
@@ -536,6 +614,8 @@ const clockIn = async (userId) => {
       date: today,
       ...getAttendanceEmployeeSnapshot(user),
       punchEvents: [],
+      isManuallyUpdated: true,
+      updateReason: "Employee manual clock in",
     });
 
     applyTimelineMetrics(
@@ -585,23 +665,26 @@ const clockOut = async (userId) => {
     );
   }
 
-  const shiftState = resolveShiftState(
-    attendance,
-    user,
-    today
-  );
-
-  if (shiftState === "COMPLETED" || shiftState === "ON_BREAK") {
+  // Manual flow is Punch In -> Punch Out only. Block only a prior MANUAL out.
+  if (attendance.clockOut && attendance.clockOutSource === "MANUAL") {
     throw new Error(
       "Already clocked out"
     );
   }
 
   const now = new Date();
-  const timeline = derivePunchTimeline([
-    ...getExistingPunchTimes(attendance),
-    now,
-  ]);
+  const clockInTime = new Date(attendance.clockIn);
+
+  if (Number.isNaN(clockInTime.getTime()) || now <= clockInTime) {
+    throw new Error("Clock Out must be after Clock In");
+  }
+
+  // Manual out: persist [clockIn, now]. Ignore biometric debounce gap.
+  const timeline = derivePunchTimeline([clockInTime, now], { minGapMs: 0 });
+
+  if (!timeline.clockOut) {
+    throw new Error("Clock Out failed. Please try again.");
+  }
 
   applyTimelineMetrics(
     attendance,
@@ -616,6 +699,9 @@ const clockOut = async (userId) => {
   attendance.employeeName = user?.name || attendance.employeeName;
   attendance.biometricEmpCode =
     user?.biometricEmpCode || attendance.biometricEmpCode;
+  attendance.isManuallyUpdated = true;
+  attendance.updateReason =
+    attendance.updateReason || "Employee manual clock out";
 
   await attendance.save();
 
@@ -1062,6 +1148,19 @@ const canOverrideWithBiometric = (attendance, field) => {
     return true;
   }
 
+  // Always allow filling an empty slot (except revoked clock-out below).
+  if (field === "clockIn" && !attendance.clockIn) {
+    return true;
+  }
+
+  if (field === "clockOut" && !attendance.clockOut) {
+    // HR revoked clock-out intentionally — do not restore from biometric.
+    if (wasClockOutRevoked(attendance)) {
+      return false;
+    }
+    return true;
+  }
+
   if (
     field === "clockIn" &&
     attendance.clockInSource === "MANUAL" &&
@@ -1171,7 +1270,7 @@ const getAttendanceFromBiometric = (
       earlyOutMinutes: 0,
       workingMinutes: 0,
       overtimeMinutes: 0,
-      totalBreakMinutes: parseDurationToMinutes(biometricRecord.breakTime),
+      totalBreakMinutes: 0,
       punchEvents: [],
     };
   }
@@ -1181,20 +1280,13 @@ const getAttendanceFromBiometric = (
     (employee
       ? resolveShiftState(existingAttendance, employee, dateKey)
       : null);
-  const isDayCompleted = shiftState === "COMPLETED";
-  const hasStoredPunches =
-    Array.isArray(existingAttendance.punches) &&
-    existingAttendance.punches.length > 0;
-  // Dashboard responses should remain stable: prefer persisted attendance values.
+  // Dashboard responses: prefer persisted attendance; fill missing from biometric In/Out.
   const shouldUseBiometricClockIn =
     !existingAttendance.clockIn &&
     biometricClockIn &&
     canOverrideWithBiometric(existingAttendance, "clockIn");
-  // Summary OUT is provisional during break/shift — never override live attendance.
   const shouldUseBiometricClockOut =
-    isDayCompleted &&
     !existingAttendance.clockOut &&
-    !hasStoredPunches &&
     biometricClockOut &&
     canOverrideWithBiometric(existingAttendance, "clockOut");
 
@@ -1205,21 +1297,16 @@ const getAttendanceFromBiometric = (
       : existingAttendance.clockIn || null,
     clockOut: shouldUseBiometricClockOut
       ? biometricClockOut
-      : isDayCompleted
-        ? existingAttendance.clockOut || null
-        : null,
+      : existingAttendance.clockOut || null,
     shiftState,
     clockInSource:
       existingAttendance.clockInSource ||
       (biometricClockIn ? "BIOMETRIC" : existingAttendance.clockInSource),
-    clockOutSource: isDayCompleted
-      ? existingAttendance.clockOutSource ||
-        (biometricClockOut ? "BIOMETRIC" : existingAttendance.clockOutSource)
-      : existingAttendance.clockOutSource,
-    totalBreakMinutes: Math.max(
-      existingAttendance.totalBreakMinutes || 0,
-      parseDurationToMinutes(biometricRecord.breakTime)
-    ),
+    clockOutSource:
+      existingAttendance.clockOutSource ||
+      (biometricClockOut ? "BIOMETRIC" : existingAttendance.clockOutSource),
+    // Break scene disabled — do not merge device BreakTime into CRM.
+    totalBreakMinutes: existingAttendance.totalBreakMinutes || 0,
   };
 };
 
@@ -1293,7 +1380,8 @@ const syncAttendanceFromBiometricInOut = async (
     const employeeIdKey = String(employee._id);
     let attendance = attendanceByEmployeeId.get(employeeIdKey);
 
-    if (attendance?.isManuallyUpdated) {
+    // Skip only fully locked days. Empty clockIn/clockOut still fill below.
+    if (hasProtectedManualPunch(attendance)) {
       continue;
     }
 
@@ -1310,12 +1398,11 @@ const syncAttendanceFromBiometricInOut = async (
         ? [biometricClockIn, validClockOut]
         : [biometricClockIn];
       const timeline = derivePunchTimeline(seedPunches);
-      const apiBreakMinutes = parseDurationToMinutes(record.breakTime);
-
-      // In/Out API has no middle punches — use device BreakTime for counting.
-      if (timeline.totalBreakMinutes === 0 && apiBreakMinutes > 0) {
-        timeline.totalBreakMinutes = apiBreakMinutes;
-      }
+      // Break scene disabled — ignore device BreakTime.
+      // const apiBreakMinutes = parseDurationToMinutes(record.breakTime);
+      // if (timeline.totalBreakMinutes === 0 && apiBreakMinutes > 0) {
+      //   timeline.totalBreakMinutes = apiBreakMinutes;
+      // }
 
       attendance = new Attendance({
         employee: employee._id,
@@ -1332,27 +1419,10 @@ const syncAttendanceFromBiometricInOut = async (
         "BIOMETRIC"
       );
 
-      if (apiBreakMinutes > 0 && (attendance.totalBreakMinutes || 0) === 0) {
-        attendance.totalBreakMinutes = apiBreakMinutes;
-        const metrics = calculateAttendanceMetrics(
-          attendance.clockIn,
-          attendance.clockOut,
-          employee,
-          dateKey,
-          {
-            totalBreakMinutes: apiBreakMinutes,
-            applyCheckoutStatus: shouldApplyCheckoutStatus(
-              dateKey,
-              getOfficeTimes(employee, dateKey).officeEnd
-            ),
-          }
-        );
-        attendance.workingMinutes = metrics.workingMinutes;
-        attendance.overtimeMinutes = metrics.overtimeMinutes;
-        attendance.shortfallMinutes = metrics.shortfallMinutes;
-        attendance.earlyOutMinutes = metrics.earlyOutMinutes;
-        attendance.status = metrics.status;
-      }
+      // if (apiBreakMinutes > 0 && (attendance.totalBreakMinutes || 0) === 0) {
+      //   attendance.totalBreakMinutes = apiBreakMinutes;
+      //   ...recalculate metrics with break...
+      // }
 
       await attendance.save();
       attendanceByEmployeeId.set(employeeIdKey, attendance);
@@ -1376,44 +1446,64 @@ const syncAttendanceFromBiometricInOut = async (
       biometricClockIn &&
       biometricClockOut &&
       biometricClockOut > biometricClockIn;
+    const canUseBioIn = canOverrideWithBiometric(attendance, "clockIn");
+    const canUseBioOut = canOverrideWithBiometric(attendance, "clockOut");
     const shouldForceBiometricWindow =
-      dayHasEnded &&
       hasValidInOutWindow &&
-      canOverrideWithBiometric(attendance, "clockIn") &&
-      canOverrideWithBiometric(attendance, "clockOut");
+      canUseBioIn &&
+      canUseBioOut &&
+      (dayHasEnded || existingPunches.length <= 2);
 
-    // Completed historical days should prefer stable In/Out API window over
-    // noisy raw punch streams (odd/misaligned punches can corrupt history).
+    // Prefer stable In/Out API window (first in + last out). No break pairing.
     if (shouldForceBiometricWindow) {
       timeline = derivePunchTimeline([biometricClockIn, biometricClockOut]);
-    } else if (existingPunches.length > 2) {
+    } else if (!canUseBioIn && !canUseBioOut) {
+      timeline = derivePunchTimeline(existingPunches);
+    } else if (existingPunches.length > 2 && attendance.clockOut) {
+      // Rich punch stream already has an out — keep it.
       timeline = derivePunchTimeline(existingPunches);
     } else {
       const seed = [];
-      if (biometricClockIn) {
-        seed.push(biometricClockIn);
+      // Prefer biometric for empty/overridable slots; keep HR MANUAL values.
+      const effectiveIn = canUseBioIn
+        ? biometricClockIn || attendance.clockIn
+        : attendance.clockIn;
+      const bioOutUsable =
+        biometricClockOut &&
+        effectiveIn &&
+        biometricClockOut > new Date(effectiveIn)
+          ? biometricClockOut
+          : null;
+      // Fill empty out from biometric; never wipe an existing out when API OUT is missing.
+      const effectiveOut = canUseBioOut
+        ? bioOutUsable || attendance.clockOut
+        : attendance.clockOut;
+
+      if (effectiveIn) {
+        seed.push(effectiveIn);
       }
       if (
-        biometricClockOut &&
-        biometricClockIn &&
-        biometricClockOut > biometricClockIn
+        effectiveOut &&
+        effectiveIn &&
+        new Date(effectiveOut) > new Date(effectiveIn)
       ) {
-        seed.push(biometricClockOut);
+        seed.push(effectiveOut);
       }
       timeline = derivePunchTimeline(
         seed.length > 0 ? seed : existingPunches
       );
     }
 
-    const apiBreakMinutes = parseDurationToMinutes(record.breakTime);
-    if (
-      timeline.totalBreakMinutes === 0 &&
-      apiBreakMinutes > 0 &&
-      timeline.clockOut &&
-      timeline.punches.length <= 2
-    ) {
-      timeline.totalBreakMinutes = apiBreakMinutes;
-    }
+    // Break scene disabled — ignore device BreakTime.
+    // const apiBreakMinutes = parseDurationToMinutes(record.breakTime);
+    // if (
+    //   timeline.totalBreakMinutes === 0 &&
+    //   apiBreakMinutes > 0 &&
+    //   timeline.clockOut &&
+    //   timeline.punches.length <= 2
+    // ) {
+    //   timeline.totalBreakMinutes = apiBreakMinutes;
+    // }
 
     let changed = false;
     const before = JSON.stringify({
@@ -1433,31 +1523,11 @@ const syncAttendanceFromBiometricInOut = async (
       "BIOMETRIC"
     );
 
-    if (
-      apiBreakMinutes > 0 &&
-      (attendance.totalBreakMinutes || 0) === 0 &&
-      (attendance.punches || []).length <= 2
-    ) {
-      attendance.totalBreakMinutes = apiBreakMinutes;
-      const metrics = calculateAttendanceMetrics(
-        attendance.clockIn,
-        attendance.clockOut,
-        employee,
-        dateKey,
-        {
-          totalBreakMinutes: apiBreakMinutes,
-          applyCheckoutStatus: shouldApplyCheckoutStatus(
-            dateKey,
-            getOfficeTimes(employee, dateKey).officeEnd
-          ),
-        }
-      );
-      attendance.workingMinutes = metrics.workingMinutes;
-      attendance.overtimeMinutes = metrics.overtimeMinutes;
-      attendance.shortfallMinutes = metrics.shortfallMinutes;
-      attendance.earlyOutMinutes = metrics.earlyOutMinutes;
-      attendance.status = metrics.status;
-    }
+    // if (
+    //   apiBreakMinutes > 0 &&
+    //   (attendance.totalBreakMinutes || 0) === 0 &&
+    //   (attendance.punches || []).length <= 2
+    // ) { ... }
 
     const after = JSON.stringify({
       clockIn: attendance.clockIn,
@@ -1610,6 +1680,11 @@ const hydrateAttendancePunchesFromProcessed = async (
     return false;
   }
 
+  // Skip fully locked days, or days where clock-out was intentionally revoked.
+  if (hasProtectedManualPunch(attendanceDoc) || wasClockOutRevoked(attendanceDoc)) {
+    return false;
+  }
+
   const { start, end } = getIstDayBounds(dateKey);
   const processedPunches = await ProcessedBiometricPunch.find({
     employee: employeeId,
@@ -1656,6 +1731,124 @@ const hydrateAttendancePunchesFromProcessed = async (
 
   attendanceDoc.punches = processedTimes;
   return true;
+};
+
+const MIN_OUT_AFTER_IN_MS = 2 * 60 * 1000;
+
+/**
+ * When In/Out API has no OUT but a later biometric punch exists after clock-in
+ * (common after HR manual clock-in blocked punch-stream), use that punch as out.
+ */
+const backfillMissingClockOutFromProcessedPunches = async (
+  attendanceDoc,
+  employee,
+  dateKey
+) => {
+  if (!attendanceDoc?.clockIn || attendanceDoc.clockOut) {
+    return false;
+  }
+
+  if (hasProtectedManualPunch(attendanceDoc)) {
+    return false;
+  }
+
+  if (!canOverrideWithBiometric(attendanceDoc, "clockOut")) {
+    return false;
+  }
+
+  const { start, end } = getIstDayBounds(dateKey);
+  const processedPunches = await ProcessedBiometricPunch.find({
+    employee: attendanceDoc.employee,
+    punchDate: {
+      $gte: start,
+      $lte: end,
+    },
+  })
+    .sort({ punchDate: 1 })
+    .lean();
+
+  if (!processedPunches.length) {
+    return false;
+  }
+
+  const clockInMs = new Date(attendanceDoc.clockIn).getTime();
+  if (Number.isNaN(clockInMs)) {
+    return false;
+  }
+
+  const laterPunches = processedPunches
+    .map((item) => new Date(item.punchDate))
+    .filter(
+      (punchDate) =>
+        !Number.isNaN(punchDate.getTime()) &&
+        punchDate.getTime() >= clockInMs + MIN_OUT_AFTER_IN_MS
+    );
+
+  if (laterPunches.length === 0) {
+    return false;
+  }
+
+  const clockOut = laterPunches[laterPunches.length - 1];
+  const timeline = derivePunchTimeline([
+    attendanceDoc.clockIn,
+    clockOut,
+  ]);
+
+  applyTimelineMetrics(
+    attendanceDoc,
+    timeline,
+    employee,
+    dateKey,
+    "BIOMETRIC"
+  );
+
+  // Stale source after revoke/empty out — ensure filled out is biometric.
+  if (attendanceDoc.clockOut) {
+    attendanceDoc.clockOutSource = "BIOMETRIC";
+  }
+
+  await attendanceDoc.save();
+  return true;
+};
+
+const backfillMissingClockOutsForDateRange = async (
+  fromDate,
+  toDate,
+  employeeById
+) => {
+  const missingRows = await Attendance.find({
+    date: { $gte: fromDate, $lte: toDate },
+    clockIn: { $ne: null },
+    $or: [{ clockOut: null }, { clockOut: { $exists: false } }],
+  });
+
+  let filled = 0;
+
+  for (const attendance of missingRows) {
+    const employee =
+      employeeById.get(String(attendance.employee)) ||
+      (await User.findById(attendance.employee)
+        .select(
+          "employeeId biometricEmpCode name designation department officeTiming"
+        )
+        .lean());
+
+    if (!employee) {
+      continue;
+    }
+
+    const changed = await backfillMissingClockOutFromProcessedPunches(
+      attendance,
+      employee,
+      attendance.date
+    );
+
+    if (changed) {
+      filled += 1;
+    }
+  }
+
+  return filled;
 };
 
 const getAttendanceDashboardDetails = async (dateKey) => {
@@ -2095,7 +2288,7 @@ const getMyAttendanceDashboard = async (
   );
   const { officeEnd } = getOfficeTimes(user, today);
   const hasClockIn = Boolean(todayAttendance?.clockIn);
-  // Treat persisted clock-out as final checkout for employee dashboards.
+  // Simple in/out: any persisted clockOut counts (no mid-day break hiding).
   const hasClockOut = Boolean(todayAttendance?.clockOut);
   const shiftState = !hasClockIn
     ? "NOT_STARTED"
@@ -2108,10 +2301,8 @@ const getMyAttendanceDashboard = async (
         todayAttendance.status
       )
   );
-  const totalBreakMinutes = Math.max(
-    todayAttendance?.totalBreakMinutes || 0,
-    parseDurationToMinutes(biometricToday?.breakTime)
-  );
+  // Break scene disabled.
+  const totalBreakMinutes = todayAttendance?.totalBreakMinutes || 0;
   const missingPunch =
     hasClockIn &&
     shiftState !== "COMPLETED" &&
@@ -2492,6 +2683,100 @@ const reconcileEmployeeAttendanceFromBiometricRange = async (
   };
 };
 
+/**
+ * Re-hydrate recent days from eTime In/Out API (fills missing clockOut/clockIn).
+ * Punch-stream cron alone often leaves yesterday's outs empty; this heals that.
+ */
+const reconcileRecentAttendanceFromBiometricInOut = async (
+  lookbackDays = 3
+) => {
+  const days = Math.max(1, Math.min(Number(lookbackDays) || 3, 14));
+  const today = getTodayDateKey();
+  const fromAnchor = new Date(
+    `${today}T12:00:00${process.env.IST_OFFSET || "+05:30"}`
+  );
+  fromAnchor.setDate(fromAnchor.getDate() - (days - 1));
+  const fromDate = getDateKeyFromDate(fromAnchor);
+  const dateKeys = getDateKeysBetween(fromDate, today);
+
+  const activeEmployees = await User.find({ isActive: true })
+    .select(
+      "employeeId biometricEmpCode name designation department officeTiming"
+    )
+    .lean();
+
+  const employeeById = new Map();
+  const employeeByCode = new Map();
+  activeEmployees.forEach((employee) => {
+    employeeById.set(String(employee._id), employee);
+
+    const normalizedCode = normalizeBiometricCode(
+      employee.biometricEmpCode ||
+        employee.employeeId?.replace(/^DOB/i, "")
+    );
+
+    if (normalizedCode) {
+      employeeByCode.set(normalizedCode, employee);
+    }
+  });
+
+  const missingFilter = {
+    date: { $gte: fromDate, $lte: today },
+    clockIn: { $ne: null },
+    $or: [{ clockOut: null }, { clockOut: { $exists: false } }],
+  };
+
+  const missingBefore = await Attendance.countDocuments(missingFilter);
+
+  const rangeResponse = await fetchBiometricInOutForRange(fromDate, today);
+
+  if (rangeResponse.error) {
+    return {
+      success: false,
+      fromDate,
+      toDate: today,
+      daysRequested: dateKeys.length,
+      missingClockOutBefore: missingBefore,
+      missingClockOutAfter: missingBefore,
+      filledCount: 0,
+      error: rangeResponse.error,
+      message: `In/Out reconcile skipped: ${rangeResponse.error}`,
+    };
+  }
+
+  for (const dateKey of dateKeys) {
+    await syncAttendanceFromBiometricInOut(
+      dateKey,
+      rangeResponse.recordsByDate?.[dateKey] || [],
+      employeeById,
+      employeeByCode
+    );
+  }
+
+  const punchBackfillFilled = await backfillMissingClockOutsForDateRange(
+    fromDate,
+    today,
+    employeeById
+  );
+
+  const missingAfter = await Attendance.countDocuments(missingFilter);
+  const filledCount = Math.max(0, missingBefore - missingAfter);
+
+  return {
+    success: true,
+    fromDate,
+    toDate: today,
+    daysRequested: dateKeys.length,
+    employeeCount: activeEmployees.length,
+    missingClockOutBefore: missingBefore,
+    missingClockOutAfter: missingAfter,
+    filledCount,
+    punchBackfillFilled,
+    error: null,
+    message: `In/Out reconcile ${fromDate}..${today}: filled ~${filledCount} missing clock-out(s) (${missingBefore} → ${missingAfter} still open; punch-backfill ${punchBackfillFilled})`,
+  };
+};
+
 const manualUpdateAttendance = async (
   attendanceId,
   body,
@@ -2786,6 +3071,7 @@ module.exports = {
   getEmployeeAttendance,
   getMonthlyTeamSheet,
   reconcileEmployeeAttendanceFromBiometricRange,
+  reconcileRecentAttendanceFromBiometricInOut,
   manualUpdateAttendance,
   revokeClockOut,
   applyBiometricPunch,

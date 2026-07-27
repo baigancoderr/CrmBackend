@@ -126,6 +126,7 @@ app.use(errorMiddleware);
 
     const {
       ensureDailyAttendanceRecords,
+      reconcileRecentAttendanceFromBiometricInOut,
     } = require("./src/modules/attendance/attendance.service");
     const {
       syncBiometricPunches,
@@ -137,6 +138,12 @@ app.use(errorMiddleware);
     const syncIntervalMs =
       Number(process.env.ETIME_SYNC_INTERVAL_MS) ||
       2 * 60 * 1000;
+    // In/Out API heal for missing clock-outs (yesterday etc.) — default every 30 min
+    const inOutReconcileIntervalMs =
+      Number(process.env.ETIME_INOUT_RECONCILE_INTERVAL_MS) ||
+      30 * 60 * 1000;
+    const inOutReconcileLookbackDays =
+      Number(process.env.ETIME_INOUT_RECONCILE_LOOKBACK_DAYS) || 3;
 
     const runAttendanceSeed = async () => {
       if (!isMongoConnected()) {
@@ -181,6 +188,28 @@ app.use(errorMiddleware);
       }
     };
 
+    const runInOutReconcile = async () => {
+      if (!isMongoConnected()) {
+        console.warn(
+          "[Biometric In/Out] Skipped: MongoDB is not connected"
+        );
+        return;
+      }
+
+      try {
+        const result =
+          await reconcileRecentAttendanceFromBiometricInOut(
+            inOutReconcileLookbackDays
+          );
+        console.log(`[Biometric In/Out] ${result.message}`);
+      } catch (error) {
+        console.error(
+          "[Biometric In/Out] Failed:",
+          error.message
+        );
+      }
+    };
+
     runAttendanceSeed();
     setInterval(
       runAttendanceSeed,
@@ -200,6 +229,13 @@ app.use(errorMiddleware);
       setInterval(runBiometricSync, syncIntervalMs);
       console.log(
         `Biometric sync scheduled every ${syncIntervalMs / 1000}s`
+      );
+
+      // Heal missing clock-outs from DownloadInOutPunchData (not just punch stream).
+      runInOutReconcile();
+      setInterval(runInOutReconcile, inOutReconcileIntervalMs);
+      console.log(
+        `Biometric In/Out reconcile scheduled every ${inOutReconcileIntervalMs / 1000}s (lookback ${inOutReconcileLookbackDays} day(s))`
       );
     } else if (!isBiometricSyncEnabled) {
       console.warn(
