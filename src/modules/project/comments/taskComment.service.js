@@ -3,7 +3,7 @@ const projectService = require("../project.service");
 const { createAppError, logProjectActivity } = require("../project.helper");
 const User = require("../../user/user.model");
 
-const addComment = async (projectId, taskId, user, payload) => {
+const addComment = async (projectId, taskId, user, payload, files = []) => {
   await projectService.assertProjectAccess(projectId, user, { write: true });
 
   const content = String(payload.content || "").trim();
@@ -20,6 +20,13 @@ const addComment = async (projectId, taskId, user, payload) => {
     mentionedIds.push(...payload.mentionedUsers);
   }
 
+  const attachments = files.map((f) => ({
+    fileName: f.originalname,
+    fileUrl: `/uploads/tickets/${f.filename}`,
+    fileSize: f.size,
+    mimeType: f.mimetype,
+  }));
+
   const comment = await TaskComment.create({
     taskId,
     projectId,
@@ -27,6 +34,7 @@ const addComment = async (projectId, taskId, user, payload) => {
     authorNameSnapshot: user.name,
     content,
     mentionedUsers: [...new Set(mentionedIds)],
+    attachments,
     isInternal: payload.isInternal === true,
   });
 

@@ -8,6 +8,17 @@ const taskCommentSchema = new mongoose.Schema(
     authorNameSnapshot: { type: String, default: "", trim: true },
     content: { type: String, required: true, trim: true, maxlength: 5000 },
     mentionedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    attachments: {
+      type: [
+        {
+          fileName: { type: String, required: true, trim: true },
+          fileUrl: { type: String, required: true, trim: true },
+          fileSize: { type: Number, required: true, min: 1 },
+          mimeType: { type: String, required: true, trim: true },
+        }
+      ],
+      default: [],
+    },
     isInternal: { type: Boolean, default: false },
   },
   { timestamps: true }

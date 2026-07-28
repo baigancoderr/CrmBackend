@@ -2,7 +2,7 @@ const taskCommentService = require("./taskComment.service");
 
 const addComment = async (req, res) => {
   try {
-    const comment = await taskCommentService.addComment(req.params.id, req.params.taskId, req.user, req.body);
+    const comment = await taskCommentService.addComment(req.params.id, req.params.taskId, req.user, req.body, req.files || []);
     return res.status(201).json({ success: true, message: "Comment added successfully.", data: comment });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ success: false, message: error.message });

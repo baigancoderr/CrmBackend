@@ -15,6 +15,17 @@ const blockerSchema = new mongoose.Schema(
     resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     resolvedByNameSnapshot: { type: String, default: "", trim: true },
     resolutionNotes: { type: String, default: "", trim: true, maxlength: 2000 },
+    attachments: {
+      type: [
+        {
+          fileName: { type: String, required: true, trim: true },
+          fileUrl: { type: String, required: true, trim: true },
+          fileSize: { type: Number, required: true, min: 1 },
+          mimeType: { type: String, required: true, trim: true },
+        }
+      ],
+      default: [],
+    },
   },
   { timestamps: true }
 );
