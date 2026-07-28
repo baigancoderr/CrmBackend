@@ -9,6 +9,7 @@ const {
   assignTeamLead,
   uploadAreaDocuments,
   listAreaDocuments,
+  deleteAreaDocument,
 } = require("./projectArea.controller");
 
 const router = express.Router({ mergeParams: true });
@@ -19,5 +20,6 @@ router.patch("/:areaId", authMiddleware, validateUpdateArea, updateArea);
 router.post("/:areaId/assign-lead", authMiddleware, assignTeamLead);
 router.post("/:areaId/documents", authMiddleware, areaDocumentUpload.array("documents", 10), uploadAreaDocuments);
 router.get("/:areaId/documents", authMiddleware, listAreaDocuments);
+router.delete("/:areaId/documents/:docId", authMiddleware, deleteAreaDocument);
 
 module.exports = router;

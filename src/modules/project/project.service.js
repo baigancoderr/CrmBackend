@@ -103,6 +103,7 @@ const createProject = async (user, payload) => {
     status: payload.status || "PLANNING",
     startDate: payload.startDate || null,
     expectedEndDate: payload.expectedEndDate || null,
+    includeWeekends: Boolean(payload.includeWeekends),
     projectManager: projectManagerId,
     projectManagerNameSnapshot: user.name,
     teamMembers: teamMemberIds,
@@ -234,7 +235,7 @@ const updateProject = async (projectId, user, payload) => {
   const oldValue = project.toObject();
   const allowed = [
     "projectName", "client", "clientUser", "description", "priority",
-    "startDate", "expectedEndDate", "budget", "status",
+    "startDate", "expectedEndDate", "includeWeekends", "budget", "status",
   ];
 
   for (const key of allowed) {

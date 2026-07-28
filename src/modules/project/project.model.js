@@ -16,6 +16,7 @@ const projectSchema = new mongoose.Schema(
     status: { type: String, enum: PROJECT_STATUSES, default: "PLANNING", index: true },
     startDate: { type: Date, default: null },
     expectedEndDate: { type: Date, default: null, index: true },
+    includeWeekends: { type: Boolean, default: false },
     completedAt: { type: Date, default: null },
     projectManager: {
       type: mongoose.Schema.Types.ObjectId,

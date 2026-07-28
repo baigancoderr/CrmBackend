@@ -1,5 +1,6 @@
 const express = require("express");
 const authMiddleware = require("../../../middleware/auth.middleware");
+const ticketUpload = require("../../../middleware/ticketUpload.middleware");
 const {
   validateCreateTask,
   validateUpdateTask,
@@ -33,8 +34,19 @@ router.post("/:taskId/assign", authMiddleware, validateAssignTask, assignTask);
 router.post("/:taskId/accept", authMiddleware, acceptTask);
 router.post("/:taskId/start", authMiddleware, startTask);
 router.post("/:taskId/pause", authMiddleware, pauseTask);
-router.post("/:taskId/submit", authMiddleware, submitForReview);
-router.post("/:taskId/review", authMiddleware, validateReviewTask, reviewTask);
+router.post(
+  "/:taskId/submit",
+  authMiddleware,
+  ticketUpload.array("attachments", 5),
+  submitForReview
+);
+router.post(
+  "/:taskId/review",
+  authMiddleware,
+  ticketUpload.array("attachments", 5),
+  validateReviewTask,
+  reviewTask
+);
 router.post("/:taskId/dependency", authMiddleware, addDependency);
 router.get("/:taskId/elapsed", authMiddleware, getElapsedTime);
 

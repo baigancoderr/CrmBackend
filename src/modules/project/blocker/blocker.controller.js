@@ -2,7 +2,7 @@ const blockerService = require("./blocker.service");
 
 const raiseBlocker = async (req, res) => {
   try {
-    const blocker = await blockerService.raiseBlocker(req.params.id, req.params.taskId, req.user, req.body);
+    const blocker = await blockerService.raiseBlocker(req.params.id, req.params.taskId, req.user, req.body, req.files || []);
     return res.status(201).json({ success: true, message: "Blocker raised successfully.", data: blocker });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ success: false, message: error.message });

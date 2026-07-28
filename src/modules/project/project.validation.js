@@ -1,7 +1,7 @@
 const { PROJECT_STATUSES, PROJECT_PRIORITIES } = require("./project.constants");
 
 const validateCreateProject = (req, res, next) => {
-  const { projectName, projectCode, teamMembers } = req.body;
+  const { projectName, projectCode, teamMembers, includeWeekends } = req.body;
 
   if (!projectName || typeof projectName !== "string" || !projectName.trim()) {
     return res.status(422).json({ success: false, message: "Project name is required." });
@@ -13,6 +13,10 @@ const validateCreateProject = (req, res, next) => {
 
   if (teamMembers !== undefined && !Array.isArray(teamMembers)) {
     return res.status(422).json({ success: false, message: "Team members must be an array." });
+  }
+
+  if (includeWeekends !== undefined && typeof includeWeekends !== "boolean") {
+    return res.status(422).json({ success: false, message: "includeWeekends must be a boolean." });
   }
 
   next();

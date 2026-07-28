@@ -14,7 +14,7 @@ const {
 const { notifyBlockerRaised } = require("../notifications/projectNotification.service");
 const { TL_ROLES } = require("../project.constants");
 
-const raiseBlocker = async (projectId, taskId, user, payload) => {
+const raiseBlocker = async (projectId, taskId, user, payload, files = []) => {
   await projectService.assertProjectAccess(projectId, user, { write: true });
   const task = await Task.findOne({ _id: taskId, projectId });
   if (!task) throw createAppError("Task not found.", 404);
@@ -26,6 +26,13 @@ const raiseBlocker = async (projectId, taskId, user, payload) => {
   const reason = String(payload.reason || "").trim();
   if (!reason) throw createAppError("Blocker reason is required.", 422);
 
+  const attachments = files.map((f) => ({
+    fileName: f.originalname,
+    fileUrl: `/uploads/tickets/${f.filename}`,
+    fileSize: f.size,
+    mimeType: f.mimetype,
+  }));
+
   const blocker = await Blocker.create({
     taskId,
     projectId,
@@ -35,6 +42,7 @@ const raiseBlocker = async (projectId, taskId, user, payload) => {
     reason,
     status: "OPEN",
     raisedAt: new Date(),
+    attachments,
   });
 
   const oldStatus = task.status;

@@ -1,5 +1,6 @@
 const path = require("path");
 const fs = require("fs");
+const fsPromises = require("fs/promises");
 const ProjectArea = require("./projectArea.model");
 const Task = require("./task/task.model");
 const User = require("../user/user.model");
@@ -221,9 +222,34 @@ const assignTeamLead = async (projectId, areaId, user, payload) => {
 
 const uploadAreaDocuments = async (projectId, areaId, user, files = []) => {
   await projectService.assertProjectAccess(projectId, user, { write: true });
+  if (!PM_ROLES.includes(user.role)) {
+    throw createAppError("Only Project Manager, HR, or Super Admin can add work area documents.", 403);
+  }
   const area = await ProjectArea.findOne({ _id: areaId, projectId });
   if (!area) throw createAppError("Work area not found.", 404);
   return saveAreaDocuments(projectId, area._id, user, files);
+};
+
+const deleteAreaDocument = async (projectId, areaId, docId, user) => {
+  await projectService.assertProjectAccess(projectId, user, { write: true });
+  if (!PM_ROLES.includes(user.role)) {
+    throw createAppError("Only Project Manager, HR, or Super Admin can remove work area documents.", 403);
+  }
+  const area = await ProjectArea.findOne({ _id: areaId, projectId });
+  if (!area) throw createAppError("Work area not found.", 404);
+
+  const document = await AreaDocument.findOne({ _id: docId, projectId, areaId });
+  if (!document) throw createAppError("Document not found.", 404);
+
+  await AreaDocument.deleteOne({ _id: docId });
+
+  const fileName = path.basename(document.fileUrl || "");
+  if (fileName) {
+    const fullPath = path.join(__dirname, "../../uploads/areas", fileName);
+    await fsPromises.unlink(fullPath).catch(() => undefined);
+  }
+
+  return document;
 };
 
 const listAreaDocuments = async (projectId, areaId, user) => {
@@ -239,5 +265,6 @@ module.exports = {
   updateArea,
   assignTeamLead,
   uploadAreaDocuments,
+  deleteAreaDocument,
   listAreaDocuments,
 };

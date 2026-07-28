@@ -74,7 +74,7 @@ const pauseTask = async (req, res) => {
 
 const submitForReview = async (req, res) => {
   try {
-    const task = await taskService.submitForReview(req.params.id, req.params.taskId, req.user, req.body);
+    const task = await taskService.submitForReview(req.params.id, req.params.taskId, req.user, req.body, req.files || []);
     return res.status(200).json({ success: true, message: "Task submitted for review.", data: task });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ success: false, message: error.message });
@@ -83,7 +83,7 @@ const submitForReview = async (req, res) => {
 
 const reviewTask = async (req, res) => {
   try {
-    const task = await taskService.reviewTask(req.params.id, req.params.taskId, req.user, req.body);
+    const task = await taskService.reviewTask(req.params.id, req.params.taskId, req.user, req.body, req.files || []);
     return res.status(200).json({ success: true, message: "Task reviewed successfully.", data: task });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ success: false, message: error.message });

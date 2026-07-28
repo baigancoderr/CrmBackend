@@ -1,5 +1,6 @@
 const Task = require("./task.model");
 const TaskDependency = require("./taskDependency.model");
+const TaskAttachment = require("./taskAttachment.model");
 const ProjectArea = require("../projectArea.model");
 const Project = require("../project.model");
 const User = require("../../user/user.model");
@@ -168,7 +169,10 @@ const pauseActiveTaskForEmployee = async (employeeId, user, reason = "Switched t
 };
 
 const createTask = async (projectId, user, payload) => {
-  await projectService.assertProjectAccess(projectId, user, { write: true });
+  const project = await projectService.assertProjectAccess(projectId, user, { write: true });
+  if (project.status !== "ACTIVE") {
+    throw createAppError("Tasks can only be created when the project status is ACTIVE.", 403);
+  }
   const area = await assertCanManageArea(projectId, payload.projectAreaId, user);
 
   const title = String(payload.title || "").trim();
@@ -241,6 +245,7 @@ const createTask = async (projectId, user, payload) => {
     });
   }
 
+  await projectService.refreshProjectMetrics(projectId);
   return Task.findById(task._id).populate(TASK_POPULATE);
 };
 
@@ -269,7 +274,9 @@ const getTaskById = async (projectId, taskId, user) => {
   await projectService.assertProjectAccess(projectId, user);
   const task = await Task.findOne({ _id: taskId, projectId }).populate(TASK_POPULATE);
   if (!task) throw createAppError("Task not found.", 404);
-  return task;
+
+  const attachments = await TaskAttachment.find({ projectId, taskId: task._id }).sort({ createdAt: -1 }).lean();
+  return { ...task.toObject(), attachments };
 };
 
 const updateTask = async (projectId, taskId, user, payload) => {
@@ -477,7 +484,7 @@ const pauseTask = async (projectId, taskId, user, payload = {}) => {
   return Task.findById(task._id).populate(TASK_POPULATE);
 };
 
-const submitForReview = async (projectId, taskId, user, payload = {}) => {
+const submitForReview = async (projectId, taskId, user, payload = {}, files = []) => {
   const task = await Task.findOne({ _id: taskId, projectId });
   if (!task) throw createAppError("Task not found.", 404);
   if (String(task.assignedTo) !== String(user.id)) {
@@ -491,6 +498,21 @@ const submitForReview = async (projectId, taskId, user, payload = {}) => {
   task.status = "UNDER_REVIEW";
   task.reviewNotes = String(payload.notes || "").trim();
   await task.save();
+
+  if (files.length) {
+    const TaskAttachment = require("./taskAttachment.model");
+    const attachments = files.map((file) => ({
+      taskId: task._id,
+      projectId,
+      fileName: file.originalname,
+      fileUrl: `/uploads/tickets/${file.filename}`,
+      fileSize: file.size,
+      mimeType: file.mimetype,
+      uploadedBy: user.id,
+      uploadedByNameSnapshot: user.name,
+    }));
+    await TaskAttachment.insertMany(attachments);
+  }
 
   await taskSessionService.endOpenSession(task._id, user.id);
   await taskSessionService.syncTimeLogForTask(task._id, user.id);
@@ -523,10 +545,13 @@ const submitForReview = async (projectId, taskId, user, payload = {}) => {
     entityId: task._id,
   });
 
-  return Task.findById(task._id).populate(TASK_POPULATE);
+  const updatedTask = await Task.findById(task._id).populate(TASK_POPULATE);
+  if (!updatedTask) throw createAppError("Task not found after update.", 404);
+  const attachments = await TaskAttachment.find({ projectId, taskId: task._id }).sort({ createdAt: -1 }).lean();
+  return { ...updatedTask.toObject(), attachments };
 };
 
-const reviewTask = async (projectId, taskId, user, payload) => {
+const reviewTask = async (projectId, taskId, user, payload, files = []) => {
   const task = await Task.findOne({ _id: taskId, projectId });
   if (!task) throw createAppError("Task not found.", 404);
 
@@ -573,7 +598,26 @@ const reviewTask = async (projectId, taskId, user, payload) => {
     task.completedAt = null;
   }
 
+  if (reason) {
+    task.reviewComment = reason;
+  }
+
   await task.save();
+
+  if (files.length) {
+    const TaskAttachment = require("./taskAttachment.model");
+    const attachments = files.map((file) => ({
+      taskId: task._id,
+      projectId,
+      fileName: file.originalname,
+      fileUrl: `/uploads/tickets/${file.filename}`,
+      fileSize: file.size,
+      mimeType: file.mimetype,
+      uploadedBy: user.id,
+      uploadedByNameSnapshot: user.name,
+    }));
+    await TaskAttachment.insertMany(attachments);
+  }
 
   if (task.assignedTo) {
     await notifyTaskReviewDecision({
@@ -614,7 +658,10 @@ const reviewTask = async (projectId, taskId, user, payload) => {
     await projectService.refreshProjectMetrics(projectId);
   }
 
-  return Task.findById(task._id).populate(TASK_POPULATE);
+  const updatedTask = await Task.findById(task._id).populate(TASK_POPULATE);
+  if (!updatedTask) throw createAppError("Task not found after review.", 404);
+  const attachments = await TaskAttachment.find({ projectId, taskId: task._id }).sort({ createdAt: -1 }).lean();
+  return { ...updatedTask.toObject(), attachments };
 };
 
 const addDependency = async (projectId, taskId, user, payload) => {

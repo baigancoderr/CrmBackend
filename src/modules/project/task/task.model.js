@@ -32,6 +32,7 @@ const taskSchema = new mongoose.Schema(
     reopenedReason: { type: String, default: "", trim: true, maxlength: 1000 },
     rejectionReason: { type: String, default: "", trim: true, maxlength: 1000 },
     reviewNotes: { type: String, default: "", trim: true, maxlength: 2000 },
+    reviewComment: { type: String, default: "", trim: true, maxlength: 2000 },
     isUrgent: { type: Boolean, default: false, index: true },
     urgentRequestStatus: {
       type: String,
