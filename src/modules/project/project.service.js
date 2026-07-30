@@ -364,6 +364,33 @@ const closeProject = async (projectId, user, payload = {}) => {
   return getProjectById(projectId, user);
 };
 
+const deleteProject = async (projectId, user) => {
+  const project = await assertProjectAccess(projectId, user, { write: true });
+  if (String(project.projectManager) !== String(user.id) && !PM_ROLES.includes(user.role)) {
+    throw createAppError("Only the Project Manager can delete the project.", 403);
+  }
+
+  const oldStatus = project.status;
+  project.status = "ARCHIVED";
+  project.isArchived = true;
+  project.archivedAt = new Date();
+  project.archivedBy = user.id;
+  await project.save();
+
+  await Task.updateMany({ projectId, status: { $ne: "ARCHIVED" } }, { status: "ARCHIVED", isArchived: true });
+
+  await logProjectActivity({
+    projectId,
+    user,
+    action: "PROJECT_ARCHIVED",
+    oldValue: { status: oldStatus },
+    newValue: { status: "ARCHIVED", isArchived: true },
+    description: "Project deleted and archived.",
+  });
+
+  return { message: "Project deleted successfully." };
+};
+
 const addProjectMembers = async (projectId, user, payload) => {
   const project = await assertProjectAccess(projectId, user, { write: true });
   if (String(project.projectManager) !== String(user.id) && !PM_ROLES.includes(user.role)) {
@@ -458,6 +485,7 @@ module.exports = {
   getProjectById,
   updateProject,
   closeProject,
+  deleteProject,
   addProjectMembers,
   ensureAssignedUserProjectMembership,
 };
