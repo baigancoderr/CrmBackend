@@ -77,4 +77,13 @@ const deleteAreaDocument = async (req, res) => {
   }
 };
 
-module.exports = { createArea, listAreas, updateArea, assignTeamLead, deleteArea, uploadAreaDocuments, listAreaDocuments, deleteAreaDocument };
+const getAreaById = async (req, res) => {
+  try {
+    const area = await projectAreaService.getAreaById(req.params.id, req.params.areaId, req.user);
+    return res.status(200).json({ success: true, data: area });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports = { createArea, listAreas, getAreaById, updateArea, assignTeamLead, deleteArea, uploadAreaDocuments, listAreaDocuments, deleteAreaDocument };

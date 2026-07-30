@@ -376,9 +376,22 @@ const listAreaDocuments = async (projectId, areaId, user) => {
   return AreaDocument.find({ projectId, areaId }).sort({ createdAt: -1 }).lean();
 };
 
+const getAreaById = async (projectId, areaId, user) => {
+  await projectService.assertProjectAccess(projectId, user);
+  const area = await ProjectArea.findOne({ _id: areaId, projectId, isArchived: false })
+    .populate("teamLead", USER_POPULATE)
+    .populate("projectLead", USER_POPULATE)
+    .lean();
+  if (!area) throw createAppError("Work area not found.", 404);
+
+  const documents = await AreaDocument.find({ areaId: area._id }).sort({ createdAt: -1 }).lean();
+  return { ...area, documents };
+};
+
 module.exports = {
   createArea,
   listAreas,
+  getAreaById,
   updateArea,
   assignTeamLead,
   uploadAreaDocuments,

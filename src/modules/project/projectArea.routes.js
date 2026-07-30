@@ -5,6 +5,7 @@ const { validateCreateArea, validateUpdateArea } = require("./projectArea.valida
 const {
   createArea,
   listAreas,
+  getAreaById,
   updateArea,
   assignTeamLead,
   deleteArea,
@@ -17,6 +18,7 @@ const router = express.Router({ mergeParams: true });
 
 router.post("/", authMiddleware, areaDocumentUpload.array("documents", 10), validateCreateArea, createArea);
 router.get("/", authMiddleware, listAreas);
+router.get("/:areaId", authMiddleware, getAreaById);
 router.patch("/:areaId", authMiddleware, validateUpdateArea, updateArea);
 router.post("/:areaId/assign-lead", authMiddleware, assignTeamLead);
 router.delete("/:areaId", authMiddleware, deleteArea);
