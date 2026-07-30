@@ -83,6 +83,14 @@ const isGroupManagerRole = (role) => {
   return GROUP_MANAGER_ROLES.includes(role);
 };
 
+const assertNotProjectChat = (conversation, action = "modify") => {
+  if (conversation.projectId) {
+    throw new Error(
+      `Project chat members are managed from the project roster. You cannot ${action} this chat manually.`
+    );
+  }
+};
+
 const normalizeUserIds = (userIds = []) => {
   const uniqueIds = [
     ...new Set(
@@ -802,6 +810,8 @@ const leaveConversation = async (
     throw new Error("You cannot leave a direct message");
   }
 
+  assertNotProjectChat(conversation, "leave");
+
   const member = assertActiveMember(conversation, userId);
   const user = await User.findById(userId)
     .select("name")
@@ -906,6 +916,7 @@ const addMembers = async (
     throw new Error("Members can only be added to groups");
   }
 
+  assertNotProjectChat(conversation, "add members to");
   assertGroupManager(conversation, user.id, user.role);
 
   const normalizedMemberIds = normalizeUserIds(memberIds);
@@ -1009,6 +1020,7 @@ const removeMember = async (
     throw new Error("Members can only be removed from groups");
   }
 
+  assertNotProjectChat(conversation, "remove members from");
   assertGroupManager(conversation, user.id, user.role);
 
   if (targetUserId.toString() === user.id.toString()) {
@@ -1228,13 +1240,16 @@ const sendMessage = async (
   }
 
   try {
-    await chatNotificationService.createMessageNotifications({
-      io,
-      conversation,
-      message: savedMessage,
-      sender: user,
-      recipientIds: activeMemberIds,
-    });
+    // Don't block send response on notification fanout
+    chatNotificationService
+      .createMessageNotifications({
+        io,
+        conversation,
+        message: savedMessage,
+        sender: user,
+        recipientIds: activeMemberIds,
+      })
+      .catch(() => undefined);
   } catch (_error) {
     // Do not fail message send when notification fanout fails.
   }
@@ -1331,9 +1346,15 @@ const editMessage = async (
 const deleteMessage = async (
   messageId,
   scope,
-  userId,
+  user,
   io
 ) => {
+  const userId = typeof user === "object" ? user.id : user;
+  const userName =
+    typeof user === "object" && user.name
+      ? String(user.name).trim()
+      : "Someone";
+
   const message = await Message.findById(messageId);
 
   if (!message) {
@@ -1346,17 +1367,28 @@ const deleteMessage = async (
 
   assertActiveMember(conversation, userId);
 
+  let updatedMessage = null;
+
   if (scope === "all") {
     if (message.sender?.toString() !== userId.toString()) {
       throw new Error("You can only delete your own messages for everyone");
     }
 
     message.isDeletedForAll = true;
-    message.content = "This message was deleted";
+    message.content = `Deleted by ${userName || "Someone"}`;
+    // Keep type TEXT so clients render the deleted placeholder, not media.
+    if (message.type === "IMAGE" || message.type === "FILE") {
+      message.type = "TEXT";
+      message.fileMeta = undefined;
+    }
     await message.save();
     await recomputeUnreadCounters(message.conversation);
     await refreshConversationLastMessage(
       message.conversation
+    );
+
+    updatedMessage = await populateMessage(
+      Message.findById(message._id)
     );
   } else {
     if (
@@ -1380,6 +1412,7 @@ const deleteMessage = async (
       messageId: message._id,
       scope,
       lastMessage: visibleLastMessage,
+      message: updatedMessage,
     };
 
     if (scope === "all") {
@@ -1387,19 +1420,33 @@ const deleteMessage = async (
         "message:deleted",
         deletePayload
       );
+      // Also push updated placeholder so clients can replace in-place.
+      if (updatedMessage) {
+        const activeMemberIds = conversation.members
+          .filter((member) => !member.leftAt)
+          .map((member) => member.user.toString());
+
+        activeMemberIds.forEach((memberId) => {
+          io.to(`user:${memberId}`).emit("message:updated", {
+            conversationId: message.conversation.toString(),
+            message: updatedMessage,
+          });
+        });
+      }
     } else {
       io.to(`user:${userId}`).emit("message:deleted", deletePayload);
     }
   }
 
-  await incrementMetric("chat_message_deleted", {
+  incrementMetric("chat_message_deleted", {
     userId: userId.toString(),
     scope,
-  });
+  }).catch(() => undefined);
 
   return {
     messageId: message._id,
     scope,
+    message: updatedMessage,
   };
 };
 
@@ -1917,6 +1964,285 @@ const updateGroupPhoto = async (conversationId, file, user, io) => {
   );
 };
 
+const getProjectMemberUserIds = async (project) => {
+  const ProjectMember = require("../project/projectMember.model");
+  const ProjectArea = require("../project/projectArea.model");
+  const Task = require("../project/task/task.model");
+
+  const [memberships, areas, tasks] = await Promise.all([
+    ProjectMember.find({
+      projectId: project._id,
+      isActive: true,
+    })
+      .select("userId")
+      .lean(),
+    ProjectArea.find({ projectId: project._id })
+      .select("teamLead projectLead")
+      .lean(),
+    Task.find({
+      projectId: project._id,
+      assignedTo: { $ne: null },
+      isArchived: false,
+    })
+      .select("assignedTo")
+      .lean(),
+  ]);
+
+  const ids = normalizeUserIds([
+    project.projectManager,
+    ...(Array.isArray(project.teamMembers) ? project.teamMembers : []),
+    ...memberships.map((m) => m.userId),
+    ...areas.flatMap((area) => [area.teamLead, area.projectLead]),
+    ...tasks.map((task) => task.assignedTo),
+  ]);
+
+  if (!ids.length) return [];
+
+  const activeUsers = await User.find({
+    _id: { $in: ids },
+    isActive: true,
+  })
+    .select("_id")
+    .lean();
+
+  return activeUsers.map((u) => u._id);
+};
+
+const syncProjectChatMembers = async (conversation, projectMemberIds) => {
+  const desired = new Set(projectMemberIds.map((id) => id.toString()));
+  let changed = false;
+
+  for (const member of conversation.members) {
+    const memberId = member.user.toString();
+    if (desired.has(memberId)) {
+      if (member.leftAt) {
+        member.leftAt = null;
+        member.joinedAt = new Date();
+        member.unreadCount = 0;
+        changed = true;
+      }
+    } else if (!member.leftAt) {
+      member.leftAt = new Date();
+      member.unreadCount = 0;
+      changed = true;
+    }
+  }
+
+  const existingIds = new Set(
+    conversation.members.map((m) => m.user.toString())
+  );
+
+  for (const memberId of desired) {
+    if (existingIds.has(memberId)) continue;
+
+    conversation.members.push({
+      user: memberId,
+      role:
+        projectMemberIds.length &&
+        String(conversation.createdBy) === memberId
+          ? "ADMIN"
+          : "MEMBER",
+      joinedAt: new Date(),
+      lastReadAt: null,
+      unreadCount: 0,
+    });
+    changed = true;
+  }
+
+  // Ensure at least one ADMIN remains among active members
+  const activeMembers = conversation.members.filter((m) => !m.leftAt);
+  const hasAdmin = activeMembers.some((m) => m.role === "ADMIN");
+  if (!hasAdmin && activeMembers.length) {
+    activeMembers[0].role = "ADMIN";
+    changed = true;
+  }
+
+  if (changed) {
+    await conversation.save();
+  }
+
+  return changed;
+};
+
+const ensureProjectChatMember = async (projectId, userId, userName = "") => {
+  const conversation = await Conversation.findOne({
+    projectId,
+    isDeleted: false,
+  }).select("_id members");
+
+  // The first project-chat open will include this user from ProjectMember.
+  if (!conversation) return false;
+
+  const member = conversation.members.find(
+    (item) => String(item.user) === String(userId)
+  );
+
+  if (member && !member.leftAt) return false;
+
+  if (member) {
+    member.leftAt = null;
+    member.joinedAt = new Date();
+    member.lastReadAt = null;
+    member.unreadCount = 0;
+    await conversation.save();
+  } else {
+    const result = await Conversation.updateOne(
+      {
+        _id: conversation._id,
+        "members.user": { $ne: userId },
+      },
+      {
+        $push: {
+          members: {
+            user: userId,
+            role: "MEMBER",
+            joinedAt: new Date(),
+            lastReadAt: null,
+            unreadCount: 0,
+          },
+        },
+      }
+    );
+
+    if (!result.modifiedCount) return false;
+  }
+
+  if (socketIo) {
+    socketIo.to(`user:${String(userId)}`).emit("conversation:added", {
+      conversationId: String(conversation._id),
+    });
+  }
+
+  let displayName = String(userName || "").trim();
+  if (!displayName) {
+    const user = await User.findById(userId).select("name").lean();
+    displayName = user?.name || "A member";
+  }
+
+  await createSystemMessage(
+    conversation._id,
+    `${displayName} joined the project chat`,
+    socketIo
+  );
+
+  return true;
+};
+
+const getOrCreateProjectConversation = async (projectId, user) => {
+  const projectService = require("../project/project.service");
+  const project = await projectService.assertProjectAccess(projectId, user);
+
+  let conversation = await Conversation.findOne({
+    projectId: project._id,
+    isDeleted: false,
+  });
+
+  // Fast path: room already exists — skip roster sync/populate on every open.
+  if (conversation) {
+    let activeMember = getActiveMember(conversation, user.id);
+    const nextName = `${project.projectName} Chat`.slice(0, 100);
+    if (conversation.name !== nextName) {
+      conversation.name = nextName;
+      conversation.save().catch(() => undefined);
+    }
+
+    if (!activeMember) {
+      // Assignment-based members need access on their first chat open.
+      const memberIds = await getProjectMemberUserIds(project);
+      await syncProjectChatMembers(conversation, memberIds);
+      activeMember = getActiveMember(conversation, user.id);
+    } else {
+      // Existing members should not wait for a full roster query.
+      getProjectMemberUserIds(project)
+        .then((memberIds) => {
+          if (!memberIds.length) return null;
+          return Conversation.findById(conversation._id).then((fresh) => {
+            if (!fresh || fresh.isDeleted) return null;
+            return syncProjectChatMembers(fresh, memberIds);
+          });
+        })
+        .catch(() => undefined);
+    }
+
+    const memberCount = conversation.members.filter((m) => !m.leftAt).length;
+
+    return {
+      _id: conversation._id,
+      type: conversation.type,
+      name: conversation.name,
+      description: conversation.description || "",
+      displayName: conversation.name,
+      displayPhoto: conversation.photo || "",
+      projectId: project._id,
+      canSend: Boolean(activeMember),
+      memberCount,
+      unreadCount: activeMember?.unreadCount || 0,
+      myRole: activeMember?.role || null,
+      updatedAt: conversation.updatedAt,
+      createdAt: conversation.createdAt,
+    };
+  }
+
+  // Create path (first open only)
+  const projectMemberIds = await getProjectMemberUserIds(project);
+  if (!projectMemberIds.length) {
+    throw new Error("Project has no members to start a chat.");
+  }
+
+  const isProjectMember = projectMemberIds.some(
+    (id) => id.toString() === user.id.toString()
+  );
+
+  const adminId = project.projectManager || projectMemberIds[0];
+  const members = projectMemberIds.map((memberId) => ({
+    user: memberId,
+    role: memberId.toString() === String(adminId) ? "ADMIN" : "MEMBER",
+    joinedAt: new Date(),
+    lastReadAt: null,
+    unreadCount: 0,
+  }));
+
+  conversation = await Conversation.create({
+    type: "GROUP",
+    name: `${project.projectName} Chat`.slice(0, 100),
+    description: `Project chat for ${project.projectCode || project.projectName}`,
+    createdBy: adminId,
+    projectId: project._id,
+    members,
+  });
+
+  // Don't block first open on system message / metrics
+  createSystemMessage(
+    conversation._id,
+    `Project chat created for ${project.projectName}`
+  ).catch(() => undefined);
+
+  incrementMetric("chat_project_conversation_created", {
+    projectId: project._id.toString(),
+    createdBy: user.id.toString(),
+  }).catch(() => undefined);
+
+  return {
+    _id: conversation._id,
+    type: conversation.type,
+    name: conversation.name,
+    description: conversation.description || "",
+    displayName: conversation.name,
+    displayPhoto: "",
+    projectId: project._id,
+    canSend: isProjectMember,
+    memberCount: members.length,
+    unreadCount: 0,
+    myRole: isProjectMember
+      ? String(adminId) === String(user.id)
+        ? "ADMIN"
+        : "MEMBER"
+      : null,
+    updatedAt: conversation.updatedAt,
+    createdAt: conversation.createdAt,
+  };
+};
+
 module.exports = {
   canCreateGroup,
   canAccessConversation,
@@ -1943,6 +2269,8 @@ module.exports = {
   getChatFilePathForUser,
   getConversationDrawerInfo,
   getConversationAttachments,
+  getOrCreateProjectConversation,
+  ensureProjectChatMember,
   setSocketIo,
   getSocketIo,
 };

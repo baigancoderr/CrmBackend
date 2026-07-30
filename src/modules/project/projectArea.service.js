@@ -2,6 +2,7 @@ const path = require("path");
 const fs = require("fs");
 const fsPromises = require("fs/promises");
 const ProjectArea = require("./projectArea.model");
+const Project = require("./project.model");
 const Task = require("./task/task.model");
 const User = require("../user/user.model");
 const AreaDocument = require("./areaDocument.model");
@@ -79,6 +80,27 @@ const createArea = async (projectId, user, payload, files = []) => {
     createdBy: user.id,
   });
 
+  if (payload.teamLead) {
+    await projectService.ensureAssignedUserProjectMembership({
+      projectId,
+      userId: payload.teamLead,
+      userName: teamLeadNameSnapshot,
+      role: "TEAM_LEAD",
+      projectAreaId: area._id,
+      addedBy: user.id,
+    });
+  }
+  if (payload.projectLead) {
+    await projectService.ensureAssignedUserProjectMembership({
+      projectId,
+      userId: payload.projectLead,
+      userName: projectLeadNameSnapshot,
+      role: "MEMBER",
+      projectAreaId: area._id,
+      addedBy: user.id,
+    });
+  }
+
   await saveAreaDocuments(projectId, area._id, user, files);
 
   await logProjectActivity({
@@ -91,18 +113,50 @@ const createArea = async (projectId, user, payload, files = []) => {
     newValue: { title, teamLead: payload.teamLead, projectLead: payload.projectLead },
   });
 
+  // First work area moves project from Planning → Active
+  const projectDoc = await Project.findById(projectId);
+  if (projectDoc && projectDoc.status === "PLANNING") {
+    const previousStatus = projectDoc.status;
+    projectDoc.status = "ACTIVE";
+    await projectDoc.save();
+    await logProjectActivity({
+      projectId,
+      user,
+      action: "PROJECT_STATUS_CHANGED",
+      module: "PROJECT",
+      entityType: "Project",
+      entityId: projectId,
+      oldValue: { status: previousStatus },
+      newValue: { status: "ACTIVE", reason: "Auto-activated when first work area was created" },
+    });
+  }
+
   const createdArea = await ProjectArea.findById(area._id)
     .populate("teamLead", USER_POPULATE)
     .populate("projectLead", USER_POPULATE)
     .lean();
   const documents = await AreaDocument.find({ areaId: area._id }).sort({ createdAt: -1 }).lean();
-  return { ...createdArea, documents };
+  return { ...createdArea, documents, projectStatus: projectDoc?.status || "ACTIVE" };
 };
 
 const listAreas = async (projectId, user, query = {}) => {
   await projectService.assertProjectAccess(projectId, user);
   const filter = { projectId };
   if (query.status) filter.status = query.status;
+
+  if (user.role === "TL") {
+    const assignedAreaIds = await Task.distinct("projectAreaId", {
+      projectId,
+      assignedTo: user.id,
+      isArchived: false,
+    });
+
+    filter.$or = [
+      { teamLead: user.id },
+      { projectLead: user.id },
+      { _id: { $in: assignedAreaIds } },
+    ];
+  }
 
   const areas = await ProjectArea.find(filter)
     .sort({ sortOrder: 1, createdAt: 1 })
@@ -172,6 +226,27 @@ const updateArea = async (projectId, areaId, user, payload) => {
 
   await area.save();
 
+  if (payload.teamLead) {
+    await projectService.ensureAssignedUserProjectMembership({
+      projectId,
+      userId: area.teamLead,
+      userName: area.teamLeadNameSnapshot,
+      role: "TEAM_LEAD",
+      projectAreaId: area._id,
+      addedBy: user.id,
+    });
+  }
+  if (payload.projectLead) {
+    await projectService.ensureAssignedUserProjectMembership({
+      projectId,
+      userId: area.projectLead,
+      userName: area.projectLeadNameSnapshot,
+      role: "MEMBER",
+      projectAreaId: area._id,
+      addedBy: user.id,
+    });
+  }
+
   await logProjectActivity({
     projectId,
     user,
@@ -206,6 +281,15 @@ const assignTeamLead = async (projectId, areaId, user, payload) => {
   area.teamLeadNameSnapshot = tl.name;
   if (area.status === "NOT_STARTED") area.status = "IN_PROGRESS";
   await area.save();
+
+  await projectService.ensureAssignedUserProjectMembership({
+    projectId,
+    userId: tl._id,
+    userName: tl.name,
+    role: "TEAM_LEAD",
+    projectAreaId: area._id,
+    addedBy: user.id,
+  });
 
   await logProjectActivity({
     projectId,

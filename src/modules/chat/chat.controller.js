@@ -23,6 +23,26 @@ const createConversation = async (req, res) => {
   }
 };
 
+const getOrCreateProjectConversation = async (req, res) => {
+  try {
+    const conversation = await chatService.getOrCreateProjectConversation(
+      req.params.projectId,
+      req.user
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: conversation,
+    });
+  } catch (error) {
+    const status = error.statusCode || 400;
+    return res.status(status).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 const getMyConversations = async (req, res) => {
   try {
     const conversations = await chatService.getMyConversations(
@@ -302,7 +322,7 @@ const deleteMessage = async (req, res) => {
     const result = await chatService.deleteMessage(
       req.params.messageId,
       scope,
-      req.user.id,
+      req.user,
       getIo()
     );
 
@@ -575,6 +595,7 @@ const getConversationAttachments = async (req, res) => {
 
 module.exports = {
   createConversation,
+  getOrCreateProjectConversation,
   getMyConversations,
   getConversationById,
   updateConversation,

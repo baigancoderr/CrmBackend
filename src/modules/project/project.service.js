@@ -19,6 +19,26 @@ const {
 const { notifyProjectAssigned, notifyProjectClosed } = require("./notifications/projectNotification.service");
 const { PM_ROLES } = require("./project.constants");
 
+// A TL counts as "added" to a project through any of the assignment paths the UI
+// offers: an explicit membership row, the project team list, or leading an area.
+const findTlProjectIds = async (userId) => {
+  const [memberships, teamProjects, ledAreas] = await Promise.all([
+    ProjectMember.find({ userId, isActive: true }).select("projectId").lean(),
+    Project.find({ teamMembers: userId }).select("_id").lean(),
+    ProjectArea.find({ $or: [{ teamLead: userId }, { projectLead: userId }] })
+      .select("projectId")
+      .lean(),
+  ]);
+
+  return [
+    ...new Set([
+      ...memberships.map((membership) => String(membership.projectId)),
+      ...teamProjects.map((project) => String(project._id)),
+      ...ledAreas.map((area) => String(area.projectId)),
+    ]),
+  ];
+};
+
 const assertProjectAccess = async (projectId, user, { write = false } = {}) => {
   const project = await Project.findById(projectId);
   if (!project) throw createAppError("Project not found.", 404);
@@ -34,14 +54,33 @@ const assertProjectAccess = async (projectId, user, { write = false } = {}) => {
     return project;
   }
 
+  if (user.role === "TL") {
+    const [isActiveMember, isAreaLead] = await Promise.all([
+      ProjectMember.exists({ projectId, userId: user.id, isActive: true }),
+      ProjectArea.exists({
+        projectId,
+        $or: [{ teamLead: user.id }, { projectLead: user.id }],
+      }),
+    ]);
+    const isTeamMember = project.teamMembers.some((id) => String(id) === String(user.id));
+
+    if (!isActiveMember && !isAreaLead && !isTeamMember) {
+      throw createAppError("Access denied.", 403);
+    }
+    return project;
+  }
+
   const isMember =
     String(project.projectManager) === String(user.id) ||
     project.teamMembers.some((id) => String(id) === String(user.id)) ||
     (await ProjectMember.findOne({ projectId, userId: user.id, isActive: true }));
 
-  const isAreaLead = await ProjectArea.findOne({ projectId, teamLead: user.id });
+  const isAreaLead = await ProjectArea.findOne({
+    projectId,
+    $or: [{ teamLead: user.id }, { projectLead: user.id }],
+  });
 
-  if (!isMember && !isAreaLead && user.role !== "TL") {
+  if (!isMember && !isAreaLead) {
     const assignedTask = await Task.findOne({ projectId, assignedTo: user.id });
     if (!assignedTask) throw createAppError("Access denied.", 403);
   }
@@ -182,10 +221,14 @@ const listProjects = async (user, query = {}) => {
         ...clientProjects.map((p) => p._id),
       ];
       filter._id = { $in: ids };
+    } else if (user.role === "TL") {
+      filter._id = { $in: await findTlProjectIds(user.id) };
     } else {
       const [memberships, managedAreas, assignedTasks] = await Promise.all([
         ProjectMember.find({ userId: user.id, isActive: true }).select("projectId"),
-        ProjectArea.find({ teamLead: user.id }).select("projectId"),
+        ProjectArea.find({
+          $or: [{ teamLead: user.id }, { projectLead: user.id }],
+        }).select("projectId"),
         Task.find({ assignedTo: user.id }).select("projectId"),
       ]);
       const ids = new Set([
@@ -369,6 +412,44 @@ const addProjectMembers = async (projectId, user, payload) => {
   return getProjectById(projectId, user);
 };
 
+const ensureAssignedUserProjectMembership = async ({
+  projectId,
+  userId,
+  userName,
+  role = "MEMBER",
+  projectAreaId = null,
+  addedBy = null,
+}) => {
+  if (!userId) return;
+
+  const existing = await ProjectMember.findOne({ projectId, userId });
+  const shouldKeepExistingRole =
+    existing && ["PROJECT_MANAGER", "TEAM_LEAD"].includes(existing.role);
+  const membershipRole = shouldKeepExistingRole ? existing.role : role;
+
+  await ProjectMember.findOneAndUpdate(
+    { projectId, userId },
+    {
+      projectId,
+      userId,
+      userNameSnapshot: userName || existing?.userNameSnapshot || "",
+      role: membershipRole,
+      projectAreaId: projectAreaId || existing?.projectAreaId || null,
+      addedBy: addedBy || existing?.addedBy || null,
+      isActive: true,
+    },
+    { upsert: true, new: true }
+  );
+
+  await Project.findByIdAndUpdate(projectId, {
+    $addToSet: { teamMembers: userId },
+  });
+
+  // Lazy require avoids coupling chat startup to project service startup.
+  const chatService = require("../chat/chat.service");
+  await chatService.ensureProjectChatMember(projectId, userId, userName);
+};
+
 module.exports = {
   assertProjectAccess,
   refreshProjectMetrics,
@@ -378,4 +459,5 @@ module.exports = {
   updateProject,
   closeProject,
   addProjectMembers,
+  ensureAssignedUserProjectMembership,
 };

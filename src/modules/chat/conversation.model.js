@@ -73,6 +73,14 @@ const conversationSchema = new mongoose.Schema(
       required: true,
     },
 
+    // When set, this GROUP is the dedicated chat for a project.
+    projectId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Project",
+      default: null,
+      index: true,
+    },
+
     members: [memberSchema],
 
     lastMessage: {
@@ -125,6 +133,18 @@ conversationSchema.index({
 conversationSchema.index({
   "lastMessage.sentAt": -1,
 });
+
+// One active project chat per project
+conversationSchema.index(
+  { projectId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      projectId: { $type: "objectId" },
+      isDeleted: false,
+    },
+  }
+);
 
 module.exports = mongoose.model(
   "Conversation",

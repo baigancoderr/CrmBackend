@@ -202,6 +202,16 @@ const createTask = async (projectId, user, payload) => {
     const assignee = await User.findById(payload.assignedTo).select("name");
     task.assignedToNameSnapshot = assignee?.name || "";
     await task.save();
+    if (assignee) {
+      await projectService.ensureAssignedUserProjectMembership({
+        projectId,
+        userId: assignee._id,
+        userName: assignee.name,
+        role: "MEMBER",
+        projectAreaId: area._id,
+        addedBy: user.id,
+      });
+    }
   }
 
   if (payload.dependsOn?.length) {
@@ -350,6 +360,15 @@ const assignTask = async (projectId, taskId, user, payload) => {
   else if (task.status === "WAITING") task.status = "ASSIGNED";
 
   await task.save();
+
+  await projectService.ensureAssignedUserProjectMembership({
+    projectId,
+    userId: assignee._id,
+    userName: assignee.name,
+    role: "MEMBER",
+    projectAreaId: task.projectAreaId,
+    addedBy: user.id,
+  });
 
   const project = await Project.findById(projectId).select("projectName");
   await notifyTaskAssigned({ recipientId: assigneeId, actorId: user.id, task, project });

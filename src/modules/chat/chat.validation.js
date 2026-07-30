@@ -21,6 +21,10 @@ const conversationIdParamSchema = Joi.object({
   id: objectId.required(),
 });
 
+const projectIdParamSchema = Joi.object({
+  projectId: objectId.required(),
+});
+
 const messageIdParamSchema = Joi.object({
   messageId: objectId.required(),
 });
@@ -107,6 +111,7 @@ module.exports = {
   paginationQuerySchema,
   createConversationSchema,
   conversationIdParamSchema,
+  projectIdParamSchema,
   messageIdParamSchema,
   notificationIdParamSchema,
   removeMemberParamSchema,

@@ -16,6 +16,7 @@ const {
   paginationQuerySchema,
   createConversationSchema,
   conversationIdParamSchema,
+  projectIdParamSchema,
   messageIdParamSchema,
   notificationIdParamSchema,
   removeMemberParamSchema,
@@ -79,6 +80,14 @@ router.post(
     body: createConversationSchema,
   }),
   chatController.createConversation
+);
+
+router.get(
+  "/conversations/project/:projectId",
+  validateRequest({
+    params: projectIdParamSchema,
+  }),
+  chatController.getOrCreateProjectConversation
 );
 
 router.get(
