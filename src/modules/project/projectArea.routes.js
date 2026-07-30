@@ -7,6 +7,7 @@ const {
   listAreas,
   updateArea,
   assignTeamLead,
+  deleteArea,
   uploadAreaDocuments,
   listAreaDocuments,
   deleteAreaDocument,
@@ -18,6 +19,7 @@ router.post("/", authMiddleware, areaDocumentUpload.array("documents", 10), vali
 router.get("/", authMiddleware, listAreas);
 router.patch("/:areaId", authMiddleware, validateUpdateArea, updateArea);
 router.post("/:areaId/assign-lead", authMiddleware, assignTeamLead);
+router.delete("/:areaId", authMiddleware, deleteArea);
 router.post("/:areaId/documents", authMiddleware, areaDocumentUpload.array("documents", 10), uploadAreaDocuments);
 router.get("/:areaId/documents", authMiddleware, listAreaDocuments);
 router.delete("/:areaId/documents/:docId", authMiddleware, deleteAreaDocument);

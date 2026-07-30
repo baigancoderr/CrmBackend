@@ -36,6 +36,15 @@ const updateTask = async (req, res) => {
   }
 };
 
+const deleteTask = async (req, res) => {
+  try {
+    const task = await taskService.deleteTask(req.params.id, req.params.taskId, req.user);
+    return res.status(200).json({ success: true, message: "Task deleted successfully.", data: task });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
 const assignTask = async (req, res) => {
   try {
     const task = await taskService.assignTask(req.params.id, req.params.taskId, req.user, req.body);
@@ -122,6 +131,7 @@ module.exports = {
   listTasks,
   getTaskById,
   updateTask,
+  deleteTask,
   assignTask,
   acceptTask,
   startTask,

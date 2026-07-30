@@ -103,6 +103,8 @@ const listAreas = async (projectId, user, query = {}) => {
   await projectService.assertProjectAccess(projectId, user);
   const filter = { projectId };
   if (query.status) filter.status = query.status;
+  if (query.archived === "true") filter.isArchived = true;
+  else filter.isArchived = false;
 
   const areas = await ProjectArea.find(filter)
     .sort({ sortOrder: 1, createdAt: 1 })
@@ -187,6 +189,37 @@ const updateArea = async (projectId, areaId, user, payload) => {
   return ProjectArea.findById(area._id).populate("teamLead", USER_POPULATE).populate("projectLead", USER_POPULATE);
 };
 
+const deleteArea = async (projectId, areaId, user) => {
+  await projectService.assertProjectAccess(projectId, user, { write: true });
+  const area = await ProjectArea.findOne({ _id: areaId, projectId });
+  if (!area) throw createAppError("Work area not found.", 404);
+
+  const isPM = PM_ROLES.includes(user.role);
+  const isAreaTL = String(area.teamLead) === String(user.id);
+  if (!isPM && !isAreaTL) throw createAppError("Access denied.", 403);
+
+  area.isArchived = true;
+  area.archivedAt = new Date();
+  area.archivedBy = user.id;
+  await area.save();
+
+  await Task.updateMany({ projectAreaId: area._id, status: { $ne: "ARCHIVED" } }, { status: "ARCHIVED", isArchived: true });
+
+  await logProjectActivity({
+    projectId,
+    user,
+    action: "AREA_ARCHIVED",
+    module: "AREA",
+    entityType: "ProjectArea",
+    entityId: area._id,
+    oldValue: { status: area.status, title: area.title },
+    newValue: { isArchived: true },
+    description: "Work area archived.",
+  });
+
+  return ProjectArea.findById(area._id).populate("teamLead", USER_POPULATE).populate("projectLead", USER_POPULATE);
+};
+
 const assignTeamLead = async (projectId, areaId, user, payload) => {
   if (!PM_ROLES.includes(user.role)) {
     const project = await projectService.getProjectById(projectId, user);
@@ -265,6 +298,7 @@ module.exports = {
   updateArea,
   assignTeamLead,
   uploadAreaDocuments,
+  deleteArea,
   deleteAreaDocument,
   listAreaDocuments,
 };

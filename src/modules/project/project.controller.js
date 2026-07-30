@@ -45,4 +45,13 @@ const closeProject = async (req, res) => {
   }
 };
 
-module.exports = { createProject, listProjects, getProjectById, updateProject, closeProject };
+const deleteProject = async (req, res) => {
+  try {
+    await projectService.deleteProject(req.params.id, req.user);
+    return res.status(200).json({ success: true, message: "Project deleted successfully." });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports = { createProject, listProjects, getProjectById, updateProject, closeProject, deleteProject };

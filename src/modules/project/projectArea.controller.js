@@ -36,6 +36,15 @@ const assignTeamLead = async (req, res) => {
   }
 };
 
+const deleteArea = async (req, res) => {
+  try {
+    const area = await projectAreaService.deleteArea(req.params.id, req.params.areaId, req.user);
+    return res.status(200).json({ success: true, message: "Work area deleted successfully.", data: area });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
 const uploadAreaDocuments = async (req, res) => {
   try {
     const docs = await projectAreaService.uploadAreaDocuments(req.params.id, req.params.areaId, req.user, req.files || []);
@@ -68,4 +77,4 @@ const deleteAreaDocument = async (req, res) => {
   }
 };
 
-module.exports = { createArea, listAreas, updateArea, assignTeamLead, uploadAreaDocuments, listAreaDocuments, deleteAreaDocument };
+module.exports = { createArea, listAreas, updateArea, assignTeamLead, deleteArea, uploadAreaDocuments, listAreaDocuments, deleteAreaDocument };

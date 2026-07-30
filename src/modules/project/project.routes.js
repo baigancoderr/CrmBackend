@@ -8,6 +8,7 @@ const {
   getProjectById,
   updateProject,
   closeProject,
+  deleteProject,
 } = require("./project.controller");
 
 const router = express.Router();
@@ -17,5 +18,6 @@ router.get("/", authMiddleware, listProjects);
 router.get("/:id", authMiddleware, getProjectById);
 router.patch("/:id", authMiddleware, validateUpdateProject, updateProject);
 router.post("/:id/close", authMiddleware, closeProject);
+router.delete("/:id", authMiddleware, roleMiddleware("SUPER_ADMIN", "HR", "PROJECT_MANAGER"), deleteProject);
 
 module.exports = router;

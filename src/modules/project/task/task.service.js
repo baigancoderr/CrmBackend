@@ -326,6 +326,44 @@ const updateTask = async (projectId, taskId, user, payload) => {
   return Task.findById(task._id).populate(TASK_POPULATE);
 };
 
+const deleteTask = async (projectId, taskId, user) => {
+  await projectService.assertProjectAccess(projectId, user, { write: true });
+  const task = await Task.findOne({ _id: taskId, projectId, isArchived: false });
+  if (!task) throw createAppError("Task not found.", 404);
+  await assertCanManageArea(projectId, task.projectAreaId, user);
+
+  const oldStatus = task.status;
+  task.status = "ARCHIVED";
+  task.isArchived = true;
+  await task.save();
+
+  await logTaskHistory({
+    taskId: task._id,
+    projectId,
+    user,
+    action: "TASK_ARCHIVED",
+    oldValue: { status: oldStatus },
+    newValue: { status: task.status },
+    description: "Task deleted.",
+  });
+
+  await logProjectActivity({
+    projectId,
+    user,
+    action: "TASK_ARCHIVED",
+    module: "TASK",
+    entityType: "Task",
+    entityId: task._id,
+    oldValue: { status: oldStatus },
+    newValue: { status: task.status },
+    description: "Task deleted.",
+  });
+
+  await refreshAreaProgress(task.projectAreaId);
+  await projectService.refreshProjectMetrics(projectId);
+  return Task.findById(task._id).populate(TASK_POPULATE);
+};
+
 const assignTask = async (projectId, taskId, user, payload) => {
   await projectService.assertProjectAccess(projectId, user, { write: true });
   const task = await Task.findOne({ _id: taskId, projectId });
@@ -885,6 +923,7 @@ module.exports = {
   listTasks,
   getTaskById,
   updateTask,
+  deleteTask,
   assignTask,
   acceptTask,
   startTask,

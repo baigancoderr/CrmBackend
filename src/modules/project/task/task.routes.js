@@ -12,6 +12,7 @@ const {
   listTasks,
   getTaskById,
   updateTask,
+  deleteTask,
   assignTask,
   acceptTask,
   startTask,
@@ -30,6 +31,7 @@ router.get("/", authMiddleware, listTasks);
 router.get("/active", authMiddleware, getActiveTask);
 router.get("/:taskId", authMiddleware, getTaskById);
 router.patch("/:taskId", authMiddleware, validateUpdateTask, updateTask);
+router.delete("/:taskId", authMiddleware, deleteTask);
 router.post("/:taskId/assign", authMiddleware, validateAssignTask, assignTask);
 router.post("/:taskId/accept", authMiddleware, acceptTask);
 router.post("/:taskId/start", authMiddleware, startTask);
