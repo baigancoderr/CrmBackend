@@ -18,6 +18,15 @@ const listTasks = async (req, res) => {
   }
 };
 
+const listMyWorkingTasks = async (req, res) => {
+  try {
+    const result = await taskService.listMyWorkingTasks(req.user.id, req.query);
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
 const getTaskById = async (req, res) => {
   try {
     const task = await taskService.getTaskById(req.params.id, req.params.taskId, req.user);
@@ -129,6 +138,7 @@ const getElapsedTime = async (req, res) => {
 module.exports = {
   createTask,
   listTasks,
+  listMyWorkingTasks,
   getTaskById,
   updateTask,
   deleteTask,

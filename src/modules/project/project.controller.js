@@ -54,4 +54,25 @@ const deleteProject = async (req, res) => {
   }
 };
 
-module.exports = { createProject, listProjects, getProjectById, updateProject, closeProject, deleteProject };
+const addProjectMembers = async (req, res) => {
+  try {
+    const project = await projectService.addProjectMembers(req.params.id, req.user, req.body);
+    return res.status(200).json({
+      success: true,
+      message: "Project members added successfully.",
+      data: project,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports = {
+  createProject,
+  listProjects,
+  getProjectById,
+  updateProject,
+  closeProject,
+  deleteProject,
+  addProjectMembers,
+};

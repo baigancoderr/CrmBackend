@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const { PROJECT_STATUSES, PROJECT_PRIORITIES } = require("./project.constants");
 
 const validateCreateProject = (req, res, next) => {
@@ -36,4 +37,31 @@ const validateUpdateProject = (req, res, next) => {
   next();
 };
 
-module.exports = { validateCreateProject, validateUpdateProject };
+const validateAddProjectMembers = (req, res, next) => {
+  const { members, role } = req.body;
+
+  if (!Array.isArray(members) || members.length === 0) {
+    return res.status(422).json({
+      success: false,
+      message: "Members must be a non-empty array.",
+    });
+  }
+
+  if (!members.every((memberId) => typeof memberId === "string" && mongoose.Types.ObjectId.isValid(memberId))) {
+    return res.status(422).json({
+      success: false,
+      message: "Every member must be a valid user id.",
+    });
+  }
+
+  if (role !== undefined && !["MEMBER", "CLIENT"].includes(role)) {
+    return res.status(422).json({
+      success: false,
+      message: "Role must be MEMBER or CLIENT.",
+    });
+  }
+
+  next();
+};
+
+module.exports = { validateCreateProject, validateUpdateProject, validateAddProjectMembers };

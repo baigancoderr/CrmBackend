@@ -1,6 +1,8 @@
+const mongoose = require("mongoose");
 const Task = require("./task.model");
 const TaskDependency = require("./taskDependency.model");
 const TaskAttachment = require("./taskAttachment.model");
+const TaskSession = require("./taskSession.model");
 const ProjectArea = require("../projectArea.model");
 const Project = require("../project.model");
 const User = require("../../user/user.model");
@@ -12,6 +14,7 @@ const {
   buildPaginatedResult,
   logProjectActivity,
   logTaskHistory,
+  calcDurationMinutes,
   isTeamLeadRole,
   USER_POPULATE,
 } = require("../project.helper");
@@ -27,6 +30,7 @@ const {
   TL_ROLES,
   ACTIVE_TASK_STATUSES,
   TASK_STATUSES,
+  TASK_PRIORITIES,
 } = require("../project.constants");
 
 const TASK_POPULATE = [
@@ -280,6 +284,115 @@ const listTasks = async (projectId, user, query = {}) => {
   return buildPaginatedResult(records, totalRecords, page, limit);
 };
 
+const WORKING_TASK_STATUSES = [
+  "ASSIGNED",
+  "ACCEPTED",
+  "IN_PROGRESS",
+  "PAUSED",
+  "BLOCKED",
+  "WAITING",
+  "REOPENED",
+  "UNDER_REVIEW",
+];
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const listMyWorkingTasks = async (userId, query = {}) => {
+  const employeeId = new mongoose.Types.ObjectId(userId);
+  const { page, limit, skip } = parsePagination(query);
+  const status = String(query.status || "").trim().toUpperCase();
+  const priority = String(query.priority || "").trim().toUpperCase();
+  const search = String(query.search || "").trim().slice(0, 100);
+  const allowedSortFields = new Set(["updatedAt", "createdAt", "deadline", "title", "status", "priority"]);
+  const sortBy = allowedSortFields.has(String(query.sortBy)) ? String(query.sortBy) : "updatedAt";
+  const sortOrder = String(query.sortOrder || "desc").toLowerCase() === "asc" ? 1 : -1;
+
+  if (status && !TASK_STATUSES.includes(status)) {
+    throw createAppError("Invalid task status.", 422);
+  }
+  if (priority && !TASK_PRIORITIES.includes(priority)) {
+    throw createAppError("Invalid task priority.", 422);
+  }
+
+  const openSessions = await TaskSession.find({
+    employeeId: userId,
+    type: "WORKING",
+    endedAt: null,
+  })
+    .sort({ startedAt: -1 })
+    .select("taskId")
+    .lean();
+
+  let currentTaskId = null;
+  if (openSessions.length) {
+    const openTaskIds = openSessions.map((session) => session.taskId);
+    const validRunningTasks = await Task.find({
+      _id: { $in: openTaskIds },
+      assignedTo: userId,
+      status: "IN_PROGRESS",
+      isArchived: false,
+    })
+      .select("_id")
+      .lean();
+    const validIds = new Set(validRunningTasks.map((task) => String(task._id)));
+    currentTaskId =
+      openSessions.find((session) => validIds.has(String(session.taskId)))?.taskId || null;
+  }
+
+  const filter = {
+    assignedTo: employeeId,
+    isArchived: false,
+    status: status || { $in: WORKING_TASK_STATUSES },
+  };
+  if (priority) filter.priority = priority;
+  if (search) {
+    const searchRegex = { $regex: escapeRegex(search), $options: "i" };
+    filter.$or = [{ title: searchRegex }, { description: searchRegex }];
+  }
+
+  const sort = { __isCurrent: -1, [sortBy]: sortOrder };
+  if (sortBy !== "updatedAt") sort.updatedAt = -1;
+  sort._id = -1;
+
+  const currentIdExpression = currentTaskId || null;
+  const [records, totalRecords, currentTask] = await Promise.all([
+    Task.aggregate([
+      { $match: filter },
+      {
+        $addFields: {
+          __isCurrent: currentTaskId
+            ? { $cond: [{ $eq: ["$_id", currentIdExpression] }, 1, 0] }
+            : 0,
+        },
+      },
+      { $sort: sort },
+      { $skip: skip },
+      { $limit: limit },
+      { $project: { __isCurrent: 0 } },
+    ]),
+    Task.countDocuments(filter),
+    currentTaskId
+      ? Task.findById(currentTaskId)
+          .populate("projectId", "_id projectName projectCode")
+          .populate("projectAreaId", "_id title")
+          .populate("assignedTo", USER_POPULATE)
+          .lean()
+      : null,
+  ]);
+
+  await Task.populate(records, [
+    { path: "projectId", select: "_id projectName projectCode" },
+    { path: "projectAreaId", select: "_id title" },
+    { path: "assignedTo", select: USER_POPULATE },
+  ]);
+
+  return {
+    ...buildPaginatedResult(records, totalRecords, page, limit),
+    currentTaskId,
+    currentTask,
+  };
+};
+
 const getTaskById = async (projectId, taskId, user) => {
   await projectService.assertProjectAccess(projectId, user);
   const task = await Task.findOne({ _id: taskId, projectId }).populate(TASK_POPULATE);
@@ -343,6 +456,14 @@ const deleteTask = async (projectId, taskId, user) => {
   await assertCanManageArea(projectId, task.projectAreaId, user);
 
   const oldStatus = task.status;
+  const openSessions = await TaskSession.find({ taskId: task._id, endedAt: null });
+  const endedAt = new Date();
+  for (const session of openSessions) {
+    session.endedAt = endedAt;
+    session.duration = calcDurationMinutes(session.startedAt, endedAt);
+    await session.save();
+  }
+
   task.status = "ARCHIVED";
   task.isArchived = true;
   await task.save();
@@ -465,15 +586,48 @@ const startTask = async (projectId, taskId, user) => {
     if (incomplete) throw createAppError("Cannot start task until dependencies are completed.", 422);
   }
 
-  const otherActive = await Task.findOne({
-    _id: { $ne: task._id },
-    assignedTo: user.id,
-    status: { $in: ["IN_PROGRESS", "ACCEPTED"] },
-    isArchived: false,
-  });
+  const openWorkingSessions = await TaskSession.find({
+    employeeId: user.id,
+    type: "WORKING",
+    endedAt: null,
+  })
+    .sort({ startedAt: -1 })
+    .populate("taskId", "title status assignedTo isArchived");
 
-  if (otherActive) {
-    await pauseActiveTaskForEmployee(user.id, user, "Started another task");
+  const validWorkingSessions = [];
+  const staleSessionEndedAt = new Date();
+  for (const session of openWorkingSessions) {
+    const sessionTask = session.taskId;
+    const isValid =
+      sessionTask &&
+      sessionTask.status === "IN_PROGRESS" &&
+      !sessionTask.isArchived &&
+      String(sessionTask.assignedTo) === String(user.id);
+
+    if (isValid) {
+      validWorkingSessions.push(session);
+    } else {
+      session.endedAt = staleSessionEndedAt;
+      session.duration = calcDurationMinutes(session.startedAt, staleSessionEndedAt);
+      await session.save();
+    }
+  }
+
+  const otherWorkingSession = validWorkingSessions.find(
+    (session) => String(session.taskId?._id || session.taskId) !== String(task._id)
+  );
+  if (otherWorkingSession) {
+    const runningTaskTitle = otherWorkingSession.taskId?.title
+      ? ` "${otherWorkingSession.taskId.title}"`
+      : "";
+    throw createAppError(
+      `Another task${runningTaskTitle} is currently running. Please pause the other task first.`,
+      409
+    );
+  }
+
+  if (validWorkingSessions.length) {
+    return Task.findById(task._id).populate(TASK_POPULATE);
   }
 
   const oldStatus = task.status;
@@ -810,20 +964,34 @@ const handleUrgentRequest = async (projectId, taskId, user, payload) => {
   }
 
   if (decision === "APPROVE") {
+    if (task.assignedTo) {
+      const openWorkingSession = await TaskSession.findOne({
+        employeeId: task.assignedTo,
+        type: "WORKING",
+        endedAt: null,
+        taskId: { $ne: task._id },
+      })
+        .sort({ startedAt: -1 })
+        .populate("taskId", "title");
+
+      if (openWorkingSession) {
+        const runningTaskTitle = openWorkingSession.taskId?.title
+          ? ` "${openWorkingSession.taskId.title}"`
+          : "";
+        throw createAppError(
+          `Another task${runningTaskTitle} is currently running. Please ask the employee to pause the other task first.`,
+          409
+        );
+      }
+    }
+
     task.urgentRequestStatus = "APPROVED";
     task.urgentApprovedBy = user.id;
-
-    if (task.assignedTo) {
-      await pauseActiveTaskForEmployee(
-        task.assignedTo,
-        { id: task.assignedTo, name: task.assignedToNameSnapshot, role: "EMPLOYEE" },
-        `Urgent task approved: ${task.title}`
-      );
-    }
 
     if (["ASSIGNED", "ACCEPTED", "PAUSED", "REOPENED", "WAITING"].includes(task.status)) {
       task.status = "IN_PROGRESS";
       task.startedAt = new Date();
+      await taskSessionService.endOpenSession(task._id, task.assignedTo);
       await taskSessionService.createSession({
         taskId: task._id,
         projectId,
@@ -863,14 +1031,21 @@ const handleUrgentRequest = async (projectId, taskId, user, payload) => {
 
 const getElapsedTime = async (projectId, taskId, user) => {
   await projectService.assertProjectAccess(projectId, user);
-  const TaskSession = require("./taskSession.model");
+  const task = await Task.findOne({ _id: taskId, projectId })
+    .select("status assignedTo isArchived")
+    .lean();
+  if (!task) throw createAppError("Task not found.", 404);
+  const canBeRunning =
+    task.status === "IN_PROGRESS" &&
+    !task.isArchived &&
+    String(task.assignedTo) === String(user.id);
 
   // All WORKING sessions for this task by this employee
   const sessions = await TaskSession.find({
     taskId,
     employeeId: user.id,
     type: "WORKING",
-  }).sort({ startedAt: 1 }).lean();
+  }).sort({ startedAt: 1 });
 
   // Sum up all completed sessions (endedAt set)
   let totalSeconds = 0;
@@ -880,9 +1055,15 @@ const getElapsedTime = async (projectId, taskId, user) => {
     if (s.endedAt) {
       // completed session — use stored duration (minutes) converted to seconds
       totalSeconds += (s.duration || 0) * 60;
-    } else {
+    } else if (canBeRunning) {
       // open/active session — track its start so frontend can add live delta
       activeStartedAt = s.startedAt;
+    } else {
+      const endedAt = new Date();
+      s.endedAt = endedAt;
+      s.duration = calcDurationMinutes(s.startedAt, endedAt);
+      await s.save();
+      totalSeconds += (s.duration || 0) * 60;
     }
   }
 
@@ -899,9 +1080,17 @@ const getElapsedTime = async (projectId, taskId, user) => {
 };
 
 const getActiveTaskForEmployee = async (userId) => {
+  const openSession = await TaskSession.findOne({
+    employeeId: userId,
+    type: "WORKING",
+    endedAt: null,
+  }).sort({ startedAt: -1 }).lean();
+  if (!openSession) return null;
+
   return Task.findOne({
+    _id: openSession.taskId,
     assignedTo: userId,
-    status: { $in: ["IN_PROGRESS", "ACCEPTED"] },
+    status: "IN_PROGRESS",
     isArchived: false,
   })
     .populate("projectId", "projectName projectCode")
@@ -940,6 +1129,7 @@ const getKanbanBoard = async (projectId, user, query = {}) => {
 module.exports = {
   createTask,
   listTasks,
+  listMyWorkingTasks,
   getTaskById,
   updateTask,
   deleteTask,

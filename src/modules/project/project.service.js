@@ -397,8 +397,11 @@ const addProjectMembers = async (projectId, user, payload) => {
     throw createAppError("Only the Project Manager can add members.", 403);
   }
 
-  const memberIds = Array.isArray(payload.members) ? payload.members : [];
+  const memberIds = [...new Set((Array.isArray(payload.members) ? payload.members : []).map(String))];
   const newIds = [];
+  const projectMemberIds = new Set(project.teamMembers.map(String));
+  // Lazy require avoids coupling chat startup to project service startup.
+  const chatService = require("../chat/chat.service");
 
   for (const memberId of memberIds) {
     const member = await User.findOne({ _id: memberId, isActive: true }).select("name role");
@@ -417,10 +420,13 @@ const addProjectMembers = async (projectId, user, payload) => {
       { upsert: true, new: true }
     );
 
-    if (!project.teamMembers.map(String).includes(String(memberId))) {
+    if (!projectMemberIds.has(memberId)) {
       project.teamMembers.push(memberId);
+      projectMemberIds.add(memberId);
       newIds.push(memberId);
     }
+
+    await chatService.ensureProjectChatMember(projectId, memberId, member.name);
 
     await logProjectActivity({
       projectId,
