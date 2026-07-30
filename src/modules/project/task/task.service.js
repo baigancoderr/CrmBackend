@@ -302,9 +302,37 @@ const updateTask = async (projectId, taskId, user, payload) => {
 
   const oldValue = task.toObject();
   const allowed = ["title", "description", "priority", "estimatedHours", "deadline", "sprintId", "kanbanOrder"];
+  let assignmentChanged = false;
 
   for (const key of allowed) {
     if (payload[key] !== undefined) task[key] = payload[key];
+  }
+
+  if (payload.assignedTo !== undefined) {
+    if (payload.assignedTo) {
+      const assignee = await User.findOne({ _id: payload.assignedTo, isActive: true }).select("name");
+      if (!assignee) throw createAppError("Assignee not found.", 404);
+
+      if (String(task.assignedTo) !== String(assignee._id)) {
+        const oldStatus = task.status;
+        task.assignedTo = assignee._id;
+        task.assignedToNameSnapshot = assignee.name;
+        task.assignedBy = user.id;
+        task.assignedByNameSnapshot = user.name;
+        task.assignedAt = new Date();
+        if (["CREATED", "REOPENED"].includes(task.status)) task.status = "ASSIGNED";
+        if (task.dependsOn?.length) await checkDependenciesForTask(task);
+        else if (task.status === "WAITING") task.status = "ASSIGNED";
+        assignmentChanged = true;
+      }
+    } else if (task.assignedTo) {
+      task.assignedTo = null;
+      task.assignedToNameSnapshot = "";
+      task.assignedBy = null;
+      task.assignedByNameSnapshot = "";
+      task.assignedAt = null;
+      assignmentChanged = true;
+    }
   }
 
   if (payload.deadline !== undefined && String(oldValue.deadline) !== String(task.deadline)) {
@@ -328,6 +356,32 @@ const updateTask = async (projectId, taskId, user, payload) => {
       oldValue: { priority: oldValue.priority },
       newValue: { priority: task.priority },
       reason: payload.reason || "",
+    });
+  }
+
+  if (assignmentChanged) {
+    const oldAssignedTo = oldValue.assignedTo;
+    await projectService.ensureAssignedUserProjectMembership({
+      projectId,
+      userId: task.assignedTo,
+      userName: task.assignedToNameSnapshot,
+      role: "MEMBER",
+      projectAreaId: task.projectAreaId,
+      addedBy: user.id,
+    });
+
+    if (task.assignedTo) {
+      const project = await Project.findById(projectId).select("projectName");
+      await notifyTaskAssigned({ recipientId: task.assignedTo, actorId: user.id, task, project });
+    }
+
+    await logTaskHistory({
+      taskId: task._id,
+      projectId,
+      user,
+      action: "TASK_ASSIGNED",
+      oldValue: { assignedTo: oldAssignedTo, status: oldValue.status },
+      newValue: { assignedTo: task.assignedTo, status: task.status },
     });
   }
 
