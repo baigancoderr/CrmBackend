@@ -100,13 +100,21 @@ const calcProjectHealth = ({ progress, delayedTasks = 0, openBlockers = 0, daysT
   if (delayedTasks >= 2 || openBlockers >= 2 || (daysToDeadline !== null && daysToDeadline <= 7)) {
     return "AT_RISK";
   }
-  return progress >= 80 ? "ON_TRACK" : progress >= 40 ? "ON_TRACK" : "AT_RISK";
+  return progress >= 40 ? "ON_TRACK" : "AT_RISK";
 };
 
 const calcProjectProgress = (tasks = []) => {
   if (!tasks.length) return 0;
   const completed = tasks.filter((t) => t.status === "COMPLETED" || t.status === "ARCHIVED").length;
   return Math.round((completed / tasks.length) * 100);
+};
+
+/** Project % = equal-weight average of each work area's %. Empty areas count as 0%. */
+const calcProjectProgressFromAreas = (tasksByArea = {}) => {
+  const areaIds = Object.keys(tasksByArea);
+  if (!areaIds.length) return 0;
+  const sum = areaIds.reduce((acc, id) => acc + calcProjectProgress(tasksByArea[id] || []), 0);
+  return Math.round(sum / areaIds.length);
 };
 
 const isManagerRole = (role) => ["SUPER_ADMIN", "HR", "PROJECT_MANAGER"].includes(role);
@@ -125,6 +133,7 @@ module.exports = {
   calcDurationMinutes,
   calcProjectHealth,
   calcProjectProgress,
+  calcProjectProgressFromAreas,
   isManagerRole,
   isTeamLeadRole,
   isClientRole,

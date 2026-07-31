@@ -1,5 +1,6 @@
 const Blocker = require("./blocker.model");
 const Task = require("../task/task.model");
+const Project = require("../project.model");
 const ProjectArea = require("../projectArea.model");
 const projectService = require("../project.service");
 const taskSessionService = require("../task/taskSession.service");
@@ -21,6 +22,15 @@ const raiseBlocker = async (projectId, taskId, user, payload, files = []) => {
 
   if (String(task.assignedTo) !== String(user.id)) {
     throw createAppError("Only the assignee can raise a blocker.", 403);
+  }
+  if (task.isArchived || ["COMPLETED", "ARCHIVED"].includes(task.status)) {
+    throw createAppError("A blocker cannot be raised on a closed task.", 422);
+  }
+  if (task.status === "UNDER_REVIEW") {
+    throw createAppError("This task is under review. A blocker cannot be raised right now.", 422);
+  }
+  if (task.status === "BLOCKED") {
+    throw createAppError("This task is already blocked. The open blocker must be resolved first.", 422);
   }
 
   const reason = String(payload.reason || "").trim();
@@ -50,7 +60,10 @@ const raiseBlocker = async (projectId, taskId, user, payload, files = []) => {
   task.blockedReason = reason;
   await task.save();
 
-  await taskSessionService.endOpenSession(taskId, user.id);
+  const closedSession = await taskSessionService.endOpenSession(taskId, user.id);
+  if (closedSession) {
+    await taskSessionService.syncTimeLogForSessions([closedSession]);
+  }
   await taskSessionService.createSession({
     taskId,
     projectId,
@@ -60,13 +73,16 @@ const raiseBlocker = async (projectId, taskId, user, payload, files = []) => {
     reason,
   });
 
-  const area = await ProjectArea.findById(task.projectAreaId).select("teamLead projectLead");
+  // Ids are read unpopulated: notification recipients must be raw ObjectIds.
+  const [area, project] = await Promise.all([
+    ProjectArea.findById(task.projectAreaId).select("teamLead projectLead").lean(),
+    Project.findById(projectId).select("projectManager").lean(),
+  ]);
+
   const recipientIds = [];
   if (area?.teamLead) recipientIds.push(area.teamLead);
   if (area?.projectLead) recipientIds.push(area.projectLead);
-
-  const project = await projectService.getProjectById(projectId, user);
-  if (project.projectManager) recipientIds.push(project.projectManager);
+  if (project?.projectManager) recipientIds.push(project.projectManager);
 
   if (recipientIds.length) {
     await notifyBlockerRaised({
@@ -102,6 +118,7 @@ const raiseBlocker = async (projectId, taskId, user, payload, files = []) => {
 };
 
 const resolveBlocker = async (projectId, blockerId, user, payload) => {
+  await projectService.assertProjectAccess(projectId, user, { write: true });
   const blocker = await Blocker.findOne({ _id: blockerId, projectId });
   if (!blocker) throw createAppError("Blocker not found.", 404);
 
@@ -110,7 +127,6 @@ const resolveBlocker = async (projectId, blockerId, user, payload) => {
   if (!canResolve) {
     throw createAppError("Only Team Lead or managers can resolve blockers.", 403);
   }
-  if (!blocker) throw createAppError("Blocker not found.", 404);
 
   if (["RESOLVED", "CLOSED"].includes(blocker.status)) {
     throw createAppError("Blocker is already resolved.", 422);
@@ -123,13 +139,23 @@ const resolveBlocker = async (projectId, blockerId, user, payload) => {
   blocker.resolutionNotes = String(payload.resolutionNotes || "").trim();
   await blocker.save();
 
+  // A task can carry more than one blocker; it stays blocked until the last one is cleared.
+  const remainingOpen = await Blocker.countDocuments({
+    taskId: blocker.taskId,
+    status: { $in: ["OPEN", "IN_PROGRESS"] },
+  });
+
   const task = await Task.findById(blocker.taskId);
-  if (task && task.status === "BLOCKED") {
+  if (task && task.status === "BLOCKED" && !remainingOpen) {
     task.status = "PAUSED";
     task.blockedReason = "";
+    task.pauseReason = "Blocker resolved — waiting to resume";
     await task.save();
 
-    await taskSessionService.endOpenSession(task._id, task.assignedTo);
+    const closedSession = await taskSessionService.endOpenSession(task._id, task.assignedTo);
+    if (closedSession) {
+      await taskSessionService.syncTimeLogForSessions([closedSession]);
+    }
   }
 
   await logProjectActivity({

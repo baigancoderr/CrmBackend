@@ -26,5 +26,7 @@ const timeLogSchema = new mongoose.Schema(
 
 timeLogSchema.index({ employeeId: 1, date: 1 });
 timeLogSchema.index({ projectId: 1, date: 1 });
+// Matches the upsert key used when a task's daily time is synced.
+timeLogSchema.index({ employeeId: 1, taskId: 1, date: 1 });
 
 module.exports = mongoose.model("TimeLog", timeLogSchema);

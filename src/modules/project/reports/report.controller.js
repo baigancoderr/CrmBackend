@@ -28,6 +28,15 @@ const getEmployeeReport = async (req, res) => {
   }
 };
 
+const getMyOverallReport = async (req, res) => {
+  try {
+    const report = await reportService.getMyOverallReport(req.user, req.query);
+    return res.status(200).json({ success: true, data: report });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
 const getTeamLeadReport = async (req, res) => {
   try {
     const report = await reportService.getTeamLeadReport(req.user, req.query);
@@ -64,12 +73,23 @@ const getEmployeeDashboard = async (req, res) => {
   }
 };
 
+const getEmployeesWorkStatus = async (req, res) => {
+  try {
+    const data = await dashboardService.getEmployeesWorkStatus(req.user, req.query);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   getProjectReport,
   generateProjectReport,
   getEmployeeReport,
+  getMyOverallReport,
   getTeamLeadReport,
   getPMDashboard,
   getTLDashboard,
   getEmployeeDashboard,
+  getEmployeesWorkStatus,
 };

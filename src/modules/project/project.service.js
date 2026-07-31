@@ -11,7 +11,7 @@ const {
   generateProjectCode,
   logProjectActivity,
   calcProjectHealth,
-  calcProjectProgress,
+  calcProjectProgressFromAreas,
   isManagerRole,
   isClientRole,
   USER_POPULATE,
@@ -89,10 +89,11 @@ const assertProjectAccess = async (projectId, user, { write = false } = {}) => {
 };
 
 const refreshProjectMetrics = async (projectId) => {
-  const [tasks, openBlockers, project] = await Promise.all([
-    Task.find({ projectId, isArchived: false }).select("status deadline").lean(),
+  const [tasks, openBlockers, project, areas] = await Promise.all([
+    Task.find({ projectId, isArchived: false }).select("status deadline projectAreaId").lean(),
     Blocker.countDocuments({ projectId, status: { $in: ["OPEN", "IN_PROGRESS"] } }),
     Project.findById(projectId),
+    ProjectArea.find({ projectId, isArchived: false }).select("_id").lean(),
   ]);
 
   if (!project) return null;
@@ -106,7 +107,16 @@ const refreshProjectMetrics = async (projectId) => {
     ? Math.ceil((new Date(project.expectedEndDate) - now) / 86400000)
     : null;
 
-  project.progress = calcProjectProgress(tasks);
+  const tasksByArea = {};
+  for (const area of areas) {
+    tasksByArea[String(area._id)] = [];
+  }
+  for (const task of tasks) {
+    const key = String(task.projectAreaId);
+    if (tasksByArea[key]) tasksByArea[key].push(task);
+  }
+
+  project.progress = calcProjectProgressFromAreas(tasksByArea);
   project.health = calcProjectHealth({
     progress: project.progress,
     delayedTasks,

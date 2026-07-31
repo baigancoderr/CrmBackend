@@ -2,6 +2,11 @@ const TaskSession = require("./taskSession.model");
 const TimeLog = require("../reports/timeLog.model");
 const Task = require("./task.model");
 const { createAppError, calcDurationMinutes } = require("../project.helper");
+const {
+  getTodayDateKey,
+  getDateKeyFromDate,
+  getIstDayBounds,
+} = require("../../../utils/istDateTime");
 
 const createSession = async ({
   taskId,
@@ -41,8 +46,7 @@ const endOpenSession = async (taskId, employeeId) => {
 const getEmployeeTimeline = async (employeeId, query = {}) => {
   const filter = { employeeId };
   if (query.date) {
-    const start = new Date(`${query.date}T00:00:00.000Z`);
-    const end = new Date(`${query.date}T23:59:59.999Z`);
+    const { start, end } = getIstDayBounds(query.date);
     filter.startedAt = { $gte: start, $lte: end };
   }
   if (query.projectId) filter.projectId = query.projectId;
@@ -63,19 +67,50 @@ const getEmployeeTimeline = async (employeeId, query = {}) => {
   }));
 };
 
-const syncTimeLogForTask = async (taskId, employeeId) => {
-  const task = await Task.findById(taskId).select("projectId title");
+/**
+ * Rebuilds the task's lifetime working hours from its closed WORKING sessions.
+ * Recomputing (instead of adding) keeps repeated syncs — e.g. submit → reject → submit
+ * on the same day — from inflating the total.
+ */
+const recalcTaskActualHours = async (taskId) => {
+  const workingSessions = await TaskSession.find({
+    taskId,
+    type: "WORKING",
+    endedAt: { $ne: null },
+  })
+    .select("duration startedAt endedAt")
+    .lean();
+
+  const totalMinutes = workingSessions.reduce(
+    (sum, s) => sum + (s.duration || calcDurationMinutes(s.startedAt, s.endedAt)),
+    0
+  );
+
+  const actualHours = Math.round((totalMinutes / 60) * 100) / 100;
+  await Task.updateOne({ _id: taskId }, { actualHours });
+  return actualHours;
+};
+
+const syncTimeLogForTask = async (taskId, employeeId, options = {}) => {
+  if (!taskId || !employeeId) return null;
+
+  const task = await Task.findById(taskId).select("projectId title").lean();
   if (!task) return null;
 
-  const today = new Date().toISOString().slice(0, 10);
+  await recalcTaskActualHours(taskId);
+
+  // Days are keyed in business time (IST) so a session started before 05:30 IST
+  // is not pushed onto the previous calendar day.
+  const dateKey = options.dateKey || getTodayDateKey();
+  const { start, end } = getIstDayBounds(dateKey);
+
   const sessions = await TaskSession.find({
     taskId,
     employeeId,
-    startedAt: {
-      $gte: new Date(`${today}T00:00:00.000Z`),
-      $lte: new Date(`${today}T23:59:59.999Z`),
-    },
-  }).lean();
+    startedAt: { $gte: start, $lte: end },
+  })
+    .sort({ startedAt: 1 })
+    .lean();
 
   if (!sessions.length) return null;
 
@@ -91,22 +126,22 @@ const syncTimeLogForTask = async (taskId, employeeId) => {
   }
 
   const totalMinutes = workingMinutes + pausedMinutes + blockedMinutes;
-  const startTime = sessions[0]?.startedAt;
-  const endTime = sessions[sessions.length - 1]?.endedAt || new Date();
-
-  task.actualHours = Math.round(((task.actualHours || 0) + workingMinutes / 60) * 100) / 100;
-  await task.save();
+  const startTime = sessions[0]?.startedAt || null;
+  const lastEndedAt = sessions.reduce(
+    (latest, s) => (s.endedAt && (!latest || s.endedAt > latest) ? s.endedAt : latest),
+    null
+  );
 
   return TimeLog.findOneAndUpdate(
-    { employeeId, taskId, date: today },
+    { employeeId, taskId, date: dateKey },
     {
       employeeId,
       employeeNameSnapshot: sessions[0]?.employeeNameSnapshot || "",
       projectId: task.projectId,
       taskId,
-      date: today,
+      date: dateKey,
       startTime,
-      endTime,
+      endTime: lastEndedAt || new Date(),
       workingMinutes,
       pausedMinutes,
       blockedMinutes,
@@ -118,6 +153,27 @@ const syncTimeLogForTask = async (taskId, employeeId) => {
   );
 };
 
+/**
+ * Writes a TimeLog for every business day the given sessions touch, so time is not
+ * lost when a session was started on an earlier day than the one being synced.
+ */
+const syncTimeLogForSessions = async (sessions = []) => {
+  const pairs = new Map();
+  for (const session of sessions) {
+    if (!session?.taskId || !session?.employeeId || !session?.startedAt) continue;
+    const dateKey = getDateKeyFromDate(new Date(session.startedAt));
+    pairs.set(`${session.taskId}|${session.employeeId}|${dateKey}`, {
+      taskId: session.taskId,
+      employeeId: session.employeeId,
+      dateKey,
+    });
+  }
+
+  for (const { taskId, employeeId, dateKey } of pairs.values()) {
+    await syncTimeLogForTask(taskId, employeeId, { dateKey });
+  }
+};
+
 const getTaskSessions = async (taskId) => {
   return TaskSession.find({ taskId }).sort({ startedAt: 1 }).lean();
 };
@@ -126,6 +182,8 @@ module.exports = {
   createSession,
   endOpenSession,
   getEmployeeTimeline,
+  recalcTaskActualHours,
   syncTimeLogForTask,
+  syncTimeLogForSessions,
   getTaskSessions,
 };

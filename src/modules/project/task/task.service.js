@@ -15,6 +15,7 @@ const {
   logProjectActivity,
   logTaskHistory,
   calcDurationMinutes,
+  calcProjectProgress,
   isTeamLeadRole,
   USER_POPULATE,
 } = require("../project.helper");
@@ -28,7 +29,6 @@ const {
 const {
   PM_ROLES,
   TL_ROLES,
-  ACTIVE_TASK_STATUSES,
   TASK_STATUSES,
   TASK_PRIORITIES,
 } = require("../project.constants");
@@ -40,6 +40,9 @@ const TASK_POPULATE = [
   { path: "projectAreaId", select: "title teamLead projectLead status" },
   { path: "dependsOn", select: "title status" },
 ];
+
+/** Employees only ever see tasks assigned to them; leads and above see the whole project. */
+const isSelfScopedTaskViewer = (role) => role === "EMPLOYEE";
 
 const assertCanManageArea = async (projectId, areaId, user) => {
   const area = await ProjectArea.findOne({ _id: areaId, projectId });
@@ -55,21 +58,32 @@ const assertCanManageArea = async (projectId, areaId, user) => {
 };
 
 const refreshAreaProgress = async (projectAreaId) => {
-  const tasks = await Task.find({ projectAreaId, isArchived: false }).select("status").lean();
-  if (!tasks.length) return;
+  if (!projectAreaId) return;
 
-  const allDone = tasks.every((t) => ["COMPLETED", "ARCHIVED"].includes(t.status));
+  const [tasks, area] = await Promise.all([
+    Task.find({ projectAreaId, isArchived: false }).select("status").lean(),
+    ProjectArea.findById(projectAreaId).select("status").lean(),
+  ]);
+  if (!area) return;
+
+  const update = { progress: calcProjectProgress(tasks) };
+
+  const allDone = tasks.length > 0 && tasks.every((t) => ["COMPLETED", "ARCHIVED"].includes(t.status));
   const anyStarted = tasks.some((t) =>
     ["IN_PROGRESS", "UNDER_REVIEW", "PAUSED", "BLOCKED", "ACCEPTED"].includes(t.status)
   );
 
-  const update = {};
   if (allDone) update.status = "COMPLETED";
   else if (anyStarted) update.status = "IN_PROGRESS";
-
-  if (Object.keys(update).length) {
-    await ProjectArea.findByIdAndUpdate(projectAreaId, update);
+  else if (!tasks.length) {
+    // Every task was removed, so an auto-set IN_PROGRESS/COMPLETED must not stick.
+    if (["IN_PROGRESS", "COMPLETED"].includes(area.status)) update.status = "NOT_STARTED";
+  } else if (area.status === "COMPLETED") {
+    // A finished area got fresh or reopened work, so it is no longer complete.
+    update.status = "IN_PROGRESS";
   }
+
+  await ProjectArea.findByIdAndUpdate(projectAreaId, update);
 };
 
 const checkDependenciesForTask = async (task) => {
@@ -138,7 +152,7 @@ const resolveDependenciesOnComplete = async (completedTask, user) => {
 const pauseActiveTaskForEmployee = async (employeeId, user, reason = "Switched to another task") => {
   const activeTask = await Task.findOne({
     assignedTo: employeeId,
-    status: { $in: ACTIVE_TASK_STATUSES },
+    status: "IN_PROGRESS",
     isArchived: false,
   });
 
@@ -149,7 +163,10 @@ const pauseActiveTaskForEmployee = async (employeeId, user, reason = "Switched t
   activeTask.pauseReason = reason;
   await activeTask.save();
 
-  await taskSessionService.endOpenSession(activeTask._id, employeeId);
+  const closedSession = await taskSessionService.endOpenSession(activeTask._id, employeeId);
+  if (closedSession) {
+    await taskSessionService.syncTimeLogForSessions([closedSession]);
+  }
   await taskSessionService.createSession({
     taskId: activeTask._id,
     projectId: activeTask.projectId,
@@ -276,6 +293,9 @@ const listTasks = async (projectId, user, query = {}) => {
 
   if (query.mine === "true") filter.assignedTo = user.id;
 
+  // Applied last so no query param can widen an employee's scope.
+  if (isSelfScopedTaskViewer(user.role)) filter.assignedTo = user.id;
+
   const [records, totalRecords] = await Promise.all([
     Task.find(filter).sort(sort).skip(skip).limit(limit).populate(TASK_POPULATE).lean(),
     Task.countDocuments(filter),
@@ -398,6 +418,11 @@ const getTaskById = async (projectId, taskId, user) => {
   const task = await Task.findOne({ _id: taskId, projectId }).populate(TASK_POPULATE);
   if (!task) throw createAppError("Task not found.", 404);
 
+  if (isSelfScopedTaskViewer(user.role)) {
+    const assigneeId = task.assignedTo?._id || task.assignedTo;
+    if (String(assigneeId) !== String(user.id)) throw createAppError("Access denied.", 403);
+  }
+
   const attachments = await TaskAttachment.find({ projectId, taskId: task._id }).sort({ createdAt: -1 }).lean();
   return { ...task.toObject(), attachments };
 };
@@ -433,7 +458,9 @@ const updateTask = async (projectId, taskId, user, payload) => {
         task.assignedBy = user.id;
         task.assignedByNameSnapshot = user.name;
         task.assignedAt = new Date();
-        if (["CREATED", "REOPENED"].includes(task.status)) task.status = "ASSIGNED";
+        // A running task handed to someone else goes back to ASSIGNED so the new
+        // assignee starts their own timer instead of inheriting a stale one.
+        if (["CREATED", "REOPENED", "IN_PROGRESS"].includes(task.status)) task.status = "ASSIGNED";
         if (task.dependsOn?.length) await checkDependenciesForTask(task);
         else if (task.status === "WAITING") task.status = "ASSIGNED";
         assignmentChanged = true;
@@ -474,6 +501,12 @@ const updateTask = async (projectId, taskId, user, payload) => {
 
   if (assignmentChanged) {
     const oldAssignedTo = oldValue.assignedTo;
+    // The previous assignee must not keep a running session on a task they no longer own.
+    if (oldAssignedTo) {
+      const closedSession = await taskSessionService.endOpenSession(task._id, oldAssignedTo);
+      if (closedSession) await taskSessionService.syncTimeLogForSessions([closedSession]);
+    }
+
     await projectService.ensureAssignedUserProjectMembership({
       projectId,
       userId: task.assignedTo,
@@ -522,6 +555,11 @@ const deleteTask = async (projectId, taskId, user) => {
   task.isArchived = true;
   await task.save();
 
+  // Time already spent stays on record even though the task is archived.
+  if (openSessions.length) {
+    await taskSessionService.syncTimeLogForSessions(openSessions);
+  }
+
   await logTaskHistory({
     taskId: task._id,
     projectId,
@@ -562,17 +600,26 @@ const assignTask = async (projectId, taskId, user, payload) => {
 
   const oldStatus = task.status;
   const oldAssignedTo = task.assignedTo;
+  const isReassignment = oldAssignedTo && String(oldAssignedTo) !== String(assigneeId);
+
   task.assignedTo = assigneeId;
   task.assignedToNameSnapshot = assignee.name;
   task.assignedBy = user.id;
   task.assignedByNameSnapshot = user.name;
   task.assignedAt = new Date();
-  task.status = task.status === "CREATED" || task.status === "REOPENED" ? "ASSIGNED" : task.status;
+  if (["CREATED", "REOPENED"].includes(task.status) || (isReassignment && task.status === "IN_PROGRESS")) {
+    task.status = "ASSIGNED";
+  }
 
   if (task.dependsOn?.length) await checkDependenciesForTask(task);
   else if (task.status === "WAITING") task.status = "ASSIGNED";
 
   await task.save();
+
+  if (isReassignment) {
+    const closedSession = await taskSessionService.endOpenSession(task._id, oldAssignedTo);
+    if (closedSession) await taskSessionService.syncTimeLogForSessions([closedSession]);
+  }
 
   await projectService.ensureAssignedUserProjectMembership({
     projectId,
@@ -630,6 +677,9 @@ const startTask = async (projectId, taskId, user) => {
   if (String(task.assignedTo) !== String(user.id)) {
     throw createAppError("Only the assignee can start this task.", 403);
   }
+  if (task.status === "BLOCKED") {
+    throw createAppError("Task is blocked. The blocker must be resolved before working on it again.", 422);
+  }
   if (["WAITING", "UNDER_REVIEW", "COMPLETED", "ARCHIVED"].includes(task.status)) {
     throw createAppError(`Task cannot be started from status ${task.status}.`, 422);
   }
@@ -649,6 +699,7 @@ const startTask = async (projectId, taskId, user) => {
     .populate("taskId", "title status assignedTo isArchived");
 
   const validWorkingSessions = [];
+  const staleSessions = [];
   const staleSessionEndedAt = new Date();
   for (const session of openWorkingSessions) {
     const sessionTask = session.taskId;
@@ -664,7 +715,16 @@ const startTask = async (projectId, taskId, user) => {
       session.endedAt = staleSessionEndedAt;
       session.duration = calcDurationMinutes(session.startedAt, staleSessionEndedAt);
       await session.save();
+      staleSessions.push({
+        taskId: session.taskId?._id || session.taskId,
+        employeeId: session.employeeId,
+        startedAt: session.startedAt,
+      });
     }
+  }
+
+  if (staleSessions.length) {
+    await taskSessionService.syncTimeLogForSessions(staleSessions);
   }
 
   const otherWorkingSession = validWorkingSessions.find(
@@ -689,7 +749,10 @@ const startTask = async (projectId, taskId, user) => {
   task.startedAt = task.startedAt || new Date();
   await task.save();
 
-  await taskSessionService.endOpenSession(task._id, user.id);
+  const previousSession = await taskSessionService.endOpenSession(task._id, user.id);
+  if (previousSession) {
+    await taskSessionService.syncTimeLogForSessions([previousSession]);
+  }
   await taskSessionService.createSession({
     taskId: task._id,
     projectId,
@@ -716,7 +779,10 @@ const pauseTask = async (projectId, taskId, user, payload = {}) => {
   if (String(task.assignedTo) !== String(user.id) && !isTeamLeadRole(user.role)) {
     throw createAppError("Access denied.", 403);
   }
-  if (!["IN_PROGRESS", "BLOCKED"].includes(task.status)) {
+  if (task.status === "BLOCKED") {
+    throw createAppError("Task is blocked. Resolve the blocker instead of pausing.", 422);
+  }
+  if (task.status !== "IN_PROGRESS") {
     throw createAppError(`Task cannot be paused from status ${task.status}.`, 422);
   }
 
@@ -726,7 +792,10 @@ const pauseTask = async (projectId, taskId, user, payload = {}) => {
   task.pauseReason = reason;
   await task.save();
 
-  await taskSessionService.endOpenSession(task._id, task.assignedTo);
+  const closedSession = await taskSessionService.endOpenSession(task._id, task.assignedTo);
+  if (closedSession) {
+    await taskSessionService.syncTimeLogForSessions([closedSession]);
+  }
   await taskSessionService.createSession({
     taskId: task._id,
     projectId,
@@ -779,8 +848,12 @@ const submitForReview = async (projectId, taskId, user, payload = {}, files = []
     await TaskAttachment.insertMany(attachments);
   }
 
-  await taskSessionService.endOpenSession(task._id, user.id);
-  await taskSessionService.syncTimeLogForTask(task._id, user.id);
+  const closedSession = await taskSessionService.endOpenSession(task._id, user.id);
+  if (closedSession) {
+    await taskSessionService.syncTimeLogForSessions([closedSession]);
+  } else {
+    await taskSessionService.syncTimeLogForTask(task._id, user.id);
+  }
 
   const area = await ProjectArea.findById(task.projectAreaId).select("teamLead");
   if (area?.teamLead) {
@@ -861,6 +934,9 @@ const reviewTask = async (projectId, taskId, user, payload, files = []) => {
     task.status = "REOPENED";
     task.reopenedReason = reason;
     task.completedAt = null;
+    task.reviewedBy = user.id;
+    task.reviewedByNameSnapshot = user.name;
+    task.reviewedAt = new Date();
   }
 
   if (reason) {
@@ -919,9 +995,11 @@ const reviewTask = async (projectId, taskId, user, payload, files = []) => {
 
   if (action === "APPROVE") {
     await resolveDependenciesOnComplete(task, user);
-    await refreshAreaProgress(task.projectAreaId);
-    await projectService.refreshProjectMetrics(projectId);
   }
+
+  // Reject/Reopen also change the completed-task count, so metrics refresh either way.
+  await refreshAreaProgress(task.projectAreaId);
+  await projectService.refreshProjectMetrics(projectId);
 
   const updatedTask = await Task.findById(task._id).populate(TASK_POPULATE);
   if (!updatedTask) throw createAppError("Task not found after review.", 404);
@@ -1042,10 +1120,14 @@ const handleUrgentRequest = async (projectId, taskId, user, payload) => {
     task.urgentRequestStatus = "APPROVED";
     task.urgentApprovedBy = user.id;
 
-    if (["ASSIGNED", "ACCEPTED", "PAUSED", "REOPENED", "WAITING"].includes(task.status)) {
+    // WAITING is left out on purpose: its dependencies are still incomplete.
+    if (["ASSIGNED", "ACCEPTED", "PAUSED", "REOPENED"].includes(task.status)) {
       task.status = "IN_PROGRESS";
-      task.startedAt = new Date();
-      await taskSessionService.endOpenSession(task._id, task.assignedTo);
+      task.startedAt = task.startedAt || new Date();
+      const previousSession = await taskSessionService.endOpenSession(task._id, task.assignedTo);
+      if (previousSession) {
+        await taskSessionService.syncTimeLogForSessions([previousSession]);
+      }
       await taskSessionService.createSession({
         taskId: task._id,
         projectId,
@@ -1105,10 +1187,14 @@ const getElapsedTime = async (projectId, taskId, user) => {
   let totalSeconds = 0;
   let activeStartedAt = null;
 
+  // Seconds come from the raw timestamps; s.duration is minute-rounded and would
+  // drop up to 30s per session from the displayed timer.
+  const sessionSeconds = (startedAt, endedAt) =>
+    Math.max(0, Math.floor((new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 1000));
+
   for (const s of sessions) {
     if (s.endedAt) {
-      // completed session — use stored duration (minutes) converted to seconds
-      totalSeconds += (s.duration || 0) * 60;
+      totalSeconds += sessionSeconds(s.startedAt, s.endedAt);
     } else if (canBeRunning) {
       // open/active session — track its start so frontend can add live delta
       activeStartedAt = s.startedAt;
@@ -1117,7 +1203,7 @@ const getElapsedTime = async (projectId, taskId, user) => {
       s.endedAt = endedAt;
       s.duration = calcDurationMinutes(s.startedAt, endedAt);
       await s.save();
-      totalSeconds += (s.duration || 0) * 60;
+      totalSeconds += sessionSeconds(s.startedAt, endedAt);
     }
   }
 
@@ -1162,6 +1248,7 @@ const getKanbanBoard = async (projectId, user, query = {}) => {
   await projectService.assertProjectAccess(projectId, user);
   const filter = { projectId, isArchived: false };
   if (query.projectAreaId) filter.projectAreaId = query.projectAreaId;
+  if (isSelfScopedTaskViewer(user.role)) filter.assignedTo = user.id;
 
   const tasks = await Task.find(filter)
     .sort({ kanbanOrder: 1, createdAt: 1 })

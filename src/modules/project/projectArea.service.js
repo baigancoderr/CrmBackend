@@ -136,6 +136,7 @@ const createArea = async (projectId, user, payload, files = []) => {
     .populate("projectLead", USER_POPULATE)
     .lean();
   const documents = await AreaDocument.find({ areaId: area._id }).sort({ createdAt: -1 }).lean();
+  await projectService.refreshProjectMetrics(projectId);
   return { ...createdArea, documents, projectStatus: projectDoc?.status || "ACTIVE" };
 };
 
@@ -292,6 +293,8 @@ const deleteArea = async (projectId, areaId, user) => {
     description: "Work area archived.",
   });
 
+  await projectService.refreshProjectMetrics(projectId);
+
   return ProjectArea.findById(area._id).populate("teamLead", USER_POPULATE).populate("projectLead", USER_POPULATE);
 };
 
@@ -384,8 +387,18 @@ const getAreaById = async (projectId, areaId, user) => {
     .lean();
   if (!area) throw createAppError("Work area not found.", 404);
 
-  const documents = await AreaDocument.find({ areaId: area._id }).sort({ createdAt: -1 }).lean();
-  return { ...area, documents };
+  // Progress is derived the same way as in listAreas so both screens agree.
+  const [documents, areaTasks] = await Promise.all([
+    AreaDocument.find({ areaId: area._id }).sort({ createdAt: -1 }).lean(),
+    Task.find({ projectAreaId: area._id, isArchived: false }).select("status").lean(),
+  ]);
+
+  return {
+    ...area,
+    progress: calcProjectProgress(areaTasks),
+    taskCount: areaTasks.length,
+    documents,
+  };
 };
 
 module.exports = {
