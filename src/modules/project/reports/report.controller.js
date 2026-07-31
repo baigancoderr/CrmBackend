@@ -1,5 +1,6 @@
 const reportService = require("./report.service");
 const dashboardService = require("./dashboard.service");
+const taskReviewService = require("./taskReview.service");
 
 const getProjectReport = async (req, res) => {
   try {
@@ -82,6 +83,15 @@ const getEmployeesWorkStatus = async (req, res) => {
   }
 };
 
+const getTaskReviewFeed = async (req, res) => {
+  try {
+    const data = await taskReviewService.getTaskReviewFeed(req.user, req.query);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   getProjectReport,
   generateProjectReport,
@@ -92,4 +102,5 @@ module.exports = {
   getTLDashboard,
   getEmployeeDashboard,
   getEmployeesWorkStatus,
+  getTaskReviewFeed,
 };

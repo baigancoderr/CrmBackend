@@ -15,6 +15,25 @@ const {
 } = require("./project.helper");
 const { PM_ROLES, AREA_STATUSES } = require("./project.constants");
 
+/** Team Leads and employees only see work areas they lead or hold a task in. */
+const isSelfScopedAreaViewer = (role) => ["TL", "EMPLOYEE"].includes(role);
+
+const buildSelfScopedAreaFilter = async (projectId, user) => {
+  const assignedAreaIds = await Task.distinct("projectAreaId", {
+    projectId,
+    assignedTo: user.id,
+    isArchived: false,
+  });
+
+  return {
+    $or: [
+      { teamLead: user.id },
+      { projectLead: user.id },
+      { _id: { $in: assignedAreaIds } },
+    ],
+  };
+};
+
 const buildAreaDocumentMeta = (file) => ({
   fileName: file.originalname,
   fileUrl: `/api/uploads/areas/${file.filename}`,
@@ -147,18 +166,8 @@ const listAreas = async (projectId, user, query = {}) => {
   if (query.archived === "true") filter.isArchived = true;
   else filter.isArchived = false;
 
-  if (user.role === "TL") {
-    const assignedAreaIds = await Task.distinct("projectAreaId", {
-      projectId,
-      assignedTo: user.id,
-      isArchived: false,
-    });
-
-    filter.$or = [
-      { teamLead: user.id },
-      { projectLead: user.id },
-      { _id: { $in: assignedAreaIds } },
-    ];
+  if (isSelfScopedAreaViewer(user.role)) {
+    Object.assign(filter, await buildSelfScopedAreaFilter(projectId, user));
   }
 
   const areas = await ProjectArea.find(filter)
@@ -374,14 +383,23 @@ const deleteAreaDocument = async (projectId, areaId, docId, user) => {
 
 const listAreaDocuments = async (projectId, areaId, user) => {
   await projectService.assertProjectAccess(projectId, user);
-  const area = await ProjectArea.findOne({ _id: areaId, projectId });
+  const filter = { _id: areaId, projectId };
+  if (isSelfScopedAreaViewer(user.role)) {
+    Object.assign(filter, await buildSelfScopedAreaFilter(projectId, user));
+  }
+  const area = await ProjectArea.findOne(filter);
   if (!area) throw createAppError("Work area not found.", 404);
   return AreaDocument.find({ projectId, areaId }).sort({ createdAt: -1 }).lean();
 };
 
 const getAreaById = async (projectId, areaId, user) => {
   await projectService.assertProjectAccess(projectId, user);
-  const area = await ProjectArea.findOne({ _id: areaId, projectId, isArchived: false })
+  const filter = { _id: areaId, projectId, isArchived: false };
+  if (isSelfScopedAreaViewer(user.role)) {
+    Object.assign(filter, await buildSelfScopedAreaFilter(projectId, user));
+  }
+
+  const area = await ProjectArea.findOne(filter)
     .populate("teamLead", USER_POPULATE)
     .populate("projectLead", USER_POPULATE)
     .lean();
