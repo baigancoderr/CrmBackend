@@ -3,10 +3,19 @@ const projectService = require("../project.service");
 const { createAppError, logProjectActivity } = require("../project.helper");
 const User = require("../../user/user.model");
 
+const INTERNAL_VISIBLE_ROLES = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL", "ACCOUNTANT"];
+
+const canViewInternalComments = (role) => INTERNAL_VISIBLE_ROLES.includes(role);
+
 const addComment = async (projectId, taskId, user, payload, files = []) => {
   await projectService.assertProjectAccess(projectId, user, { write: true });
 
   const content = String(payload.content || "").trim();
+  const isInternal = payload.isInternal === true || payload.isInternal === "true";
+
+  if (isInternal && !canViewInternalComments(user.role)) {
+    throw createAppError("You are not authorized to post internal comments.", 403);
+  }
   if (!content) throw createAppError("Comment content is required.", 422);
 
   const mentionPattern = /@\[([a-fA-F0-9]{24})\]/g;
@@ -35,7 +44,7 @@ const addComment = async (projectId, taskId, user, payload, files = []) => {
     content,
     mentionedUsers: [...new Set(mentionedIds)],
     attachments,
-    isInternal: payload.isInternal === true,
+    isInternal,
   });
 
   await logProjectActivity({
@@ -52,7 +61,13 @@ const addComment = async (projectId, taskId, user, payload, files = []) => {
 
 const listComments = async (projectId, taskId, user) => {
   await projectService.assertProjectAccess(projectId, user);
-  return TaskComment.find({ taskId, projectId })
+
+  const filter = { taskId, projectId };
+  if (!canViewInternalComments(user.role)) {
+    filter.isInternal = false;
+  }
+
+  return TaskComment.find(filter)
     .sort({ createdAt: 1 })
     .populate("author", "name role profilePhoto")
     .populate("mentionedUsers", "name email")

@@ -100,7 +100,8 @@ const calcProjectHealth = ({ progress, delayedTasks = 0, openBlockers = 0, daysT
   if (delayedTasks >= 2 || openBlockers >= 2 || (daysToDeadline !== null && daysToDeadline <= 7)) {
     return "AT_RISK";
   }
-  return progress >= 80 ? "ON_TRACK" : progress >= 40 ? "ON_TRACK" : "AT_RISK";
+  // return progress >= 80 ? "ON_TRACK" : progress >= 40 ? "ON_TRACK" : "AT_RISK";
+  return progress >= 50 ? "ON_TRACK" : "ON_TRACK";
 };
 
 const calcProjectProgress = (tasks = []) => {
