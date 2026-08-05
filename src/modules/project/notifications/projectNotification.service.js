@@ -42,7 +42,7 @@ const notifyTaskSubmittedForReview = async ({ recipientId, actorId, task }) => {
     message: `Task "${task.title}" has been submitted for your review.`,
     status: "PENDING",
     entityType: "TASK",
-    entityId: task._id,
+    entityId: task._id, 
     link: `/projects/${task.projectId}/tasks/${task._id}`,
   });
 };

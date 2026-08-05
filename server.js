@@ -247,6 +247,9 @@ app.use(errorMiddleware);
       );
     }
 
+    const { startTaskScheduler } = require("./src/modules/project/task/taskScheduler");
+    startTaskScheduler();
+
     initializeChatSocket(io);
 
     server.listen(PORT, () => {
