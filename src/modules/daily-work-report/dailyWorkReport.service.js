@@ -75,6 +75,43 @@ const getDateStart = (dateString) => {
   return new Date(year, month - 1, day, 0, 0, 0, 0);
 };
 
+const applyReportDateFilters = (filter, query = {}) => {
+  const { reportDate, fromDate, toDate } = query;
+
+  const normalizedFromDate = fromDate ? normalizeDateString(fromDate) : "";
+  const normalizedToDate = toDate ? normalizeDateString(toDate) : "";
+
+  if (fromDate && !normalizedFromDate) {
+    throw createAppError("Invalid from date filter.", 422);
+  }
+  if (toDate && !normalizedToDate) {
+    throw createAppError("Invalid to date filter.", 422);
+  }
+  if (normalizedFromDate && normalizedToDate && normalizedFromDate > normalizedToDate) {
+    throw createAppError("From date cannot be after To date.", 422);
+  }
+
+  // Prefer explicit range filters when either end is provided.
+  if (normalizedFromDate || normalizedToDate) {
+    filter.reportDate = {};
+    if (normalizedFromDate) {
+      filter.reportDate.$gte = normalizedFromDate;
+    }
+    if (normalizedToDate) {
+      filter.reportDate.$lte = normalizedToDate;
+    }
+    return;
+  }
+
+  if (reportDate) {
+    const normalizedReportDate = normalizeDateString(reportDate);
+    if (!normalizedReportDate) {
+      throw createAppError("Invalid date filter.", 422);
+    }
+    filter.reportDate = normalizedReportDate;
+  }
+};
+
 const isWithinEditableWindow = (reportDate) => {
   const reportDateStart = getDateStart(reportDate);
   if (!reportDateStart) {
@@ -319,7 +356,7 @@ const updateMyDailyWorkReport = async (userId, reportId, payload) => {
 };
 
 const getMyDailyWorkReports = async (userId, query) => {
-  const { page = 1, limit = 10, workStatus, reviewStatus, reportDate } = query;
+  const { page = 1, limit = 10, workStatus, reviewStatus } = query;
 
   const currentPage = Math.max(Number(page) || 1, 1);
   const perPage = Math.max(Number(limit) || 10, 1);
@@ -345,13 +382,7 @@ const getMyDailyWorkReports = async (userId, query) => {
     filter.reviewStatus = normalizedReviewStatus;
   }
 
-  if (reportDate) {
-    const normalizedReportDate = normalizeDateString(reportDate);
-    if (!normalizedReportDate) {
-      throw createAppError("Invalid date filter.", 422);
-    }
-    filter.reportDate = normalizedReportDate;
-  }
+  applyReportDateFilters(filter, query);
 
   const totalRecords = await DailyWorkReport.countDocuments(filter);
   const data = await DailyWorkReport.find(filter)
@@ -377,7 +408,6 @@ const getAllDailyWorkReports = async (query, reviewer = null) => {
     search = "",
     workStatus,
     reviewStatus,
-    reportDate,
     employeeId,
   } = query;
 
@@ -409,13 +439,7 @@ const getAllDailyWorkReports = async (query, reviewer = null) => {
     filter.reviewStatus = normalizedReviewStatus;
   }
 
-  if (reportDate) {
-    const normalizedReportDate = normalizeDateString(reportDate);
-    if (!normalizedReportDate) {
-      throw createAppError("Invalid date filter.", 422);
-    }
-    filter.reportDate = normalizedReportDate;
-  }
+  applyReportDateFilters(filter, query);
 
   if (employeeId) {
     filter.employee = String(employeeId).trim();
