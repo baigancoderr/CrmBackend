@@ -191,6 +191,12 @@ const pauseActiveTaskForEmployee = async (employeeId, user, reason = "Switched t
 
 const createTask = async (projectId, user, payload) => {
   const project = await projectService.assertProjectAccess(projectId, user, { write: true });
+  // If project does not include weekends, prevent task deadlines on weekends
+  if (!project.includeWeekends && payload.deadline) {
+    const dl = new Date(payload.deadline);
+    const day = dl.getDay();
+    if (day === 0 || day === 6) throw createAppError("Project does not include weekends; task deadline cannot be on weekend.", 422);
+  }
   if (project.status !== "ACTIVE") {
     throw createAppError("Tasks can only be created when the project status is ACTIVE.", 403);
   }
@@ -428,7 +434,7 @@ const getTaskById = async (projectId, taskId, user) => {
 };
 
 const updateTask = async (projectId, taskId, user, payload) => {
-  await projectService.assertProjectAccess(projectId, user, { write: true });
+  const project = await projectService.assertProjectAccess(projectId, user, { write: true });
   const task = await Task.findOne({ _id: taskId, projectId });
   if (!task) throw createAppError("Task not found.", 404);
 
@@ -444,6 +450,16 @@ const updateTask = async (projectId, taskId, user, payload) => {
 
   for (const key of allowed) {
     if (payload[key] !== undefined) task[key] = payload[key];
+  }
+
+  // Validate deadline against project weekend rule
+  if (payload.deadline !== undefined) {
+    const newDeadline = payload.deadline ? new Date(payload.deadline) : null;
+    if (newDeadline && !project.includeWeekends) {
+      const day = newDeadline.getDay();
+      if (day === 0 || day === 6) throw createAppError("Project does not include weekends; task deadline cannot be on weekend.", 422);
+    }
+    task.deadline = newDeadline;
   }
 
   if (payload.assignedTo !== undefined) {

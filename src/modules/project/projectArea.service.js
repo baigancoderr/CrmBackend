@@ -59,7 +59,7 @@ const saveAreaDocuments = async (projectId, areaId, user, files = []) => {
 };
 
 const createArea = async (projectId, user, payload, files = []) => {
-  await projectService.assertProjectAccess(projectId, user, { write: true });
+  const project = await projectService.assertProjectAccess(projectId, user, { write: true });
   if (!PM_ROLES.includes(user.role)) {
     const project = await projectService.getProjectById(projectId, user);
     if (String(project.projectManager) !== String(user.id)) {
@@ -82,6 +82,20 @@ const createArea = async (projectId, user, payload, files = []) => {
     const lead = await User.findById(payload.projectLead).select("name");
     if (!lead) throw createAppError("Project Lead not found.", 404);
     projectLeadNameSnapshot = lead.name;
+  }
+
+  // Prevent area dates falling on weekends unless project includes weekends
+  if (!project.includeWeekends) {
+    if (payload.startDate) {
+      const sd = new Date(payload.startDate);
+      const day = sd.getDay();
+      if (day === 0 || day === 6) throw createAppError("Project does not include weekends; area start date cannot be on weekend.", 422);
+    }
+    if (payload.estimatedEndDate) {
+      const ed = new Date(payload.estimatedEndDate);
+      const day = ed.getDay();
+      if (day === 0 || day === 6) throw createAppError("Project does not include weekends; area estimated end date cannot be on weekend.", 422);
+    }
   }
 
   const area = await ProjectArea.create({
@@ -203,7 +217,7 @@ const listAreas = async (projectId, user, query = {}) => {
 };
 
 const updateArea = async (projectId, areaId, user, payload) => {
-  await projectService.assertProjectAccess(projectId, user, { write: true });
+  const project = await projectService.assertProjectAccess(projectId, user, { write: true });
   const area = await ProjectArea.findOne({ _id: areaId, projectId });
   if (!area) throw createAppError("Work area not found.", 404);
 
@@ -226,6 +240,20 @@ const updateArea = async (projectId, areaId, user, payload) => {
       area.teamLeadNameSnapshot = tl?.name || "";
     }
   }
+  // Prevent area dates falling on weekends unless project includes weekends
+  if (!project.includeWeekends) {
+    if (payload.startDate) {
+      const sd = new Date(payload.startDate);
+      const day = sd.getDay();
+      if (day === 0 || day === 6) throw createAppError("Project does not include weekends; area start date cannot be on weekend.", 422);
+    }
+    if (payload.estimatedEndDate) {
+      const ed = new Date(payload.estimatedEndDate);
+      const day = ed.getDay();
+      if (day === 0 || day === 6) throw createAppError("Project does not include weekends; area estimated end date cannot be on weekend.", 422);
+    }
+  }
+
   if (payload.startDate !== undefined) area.startDate = payload.startDate ? new Date(payload.startDate) : null;
   if (payload.estimatedEndDate !== undefined) area.estimatedEndDate = payload.estimatedEndDate ? new Date(payload.estimatedEndDate) : null;
   if (payload.projectLead !== undefined && isPM) {
