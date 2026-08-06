@@ -794,9 +794,12 @@ const getMyMonthlyAttendance =
           $gte: startDate,
           $lte: endDate,
         },
-      }).sort({
-        date: 1,
-      });
+      })
+        .populate("punchEvents.by", "name employeeId role")
+        .populate("updatedBy", "name employeeId role")
+        .sort({
+          date: -1,
+        });
 
     return {
       success: true,
