@@ -16,6 +16,7 @@ const {
   logTaskHistory,
   calcDurationMinutes,
   calcProjectProgress,
+  deriveAreaStatusFromTasks,
   isTeamLeadRole,
   USER_POPULATE,
 } = require("../project.helper");
@@ -62,28 +63,14 @@ const refreshAreaProgress = async (projectAreaId) => {
 
   const [tasks, area] = await Promise.all([
     Task.find({ projectAreaId, isArchived: false }).select("status").lean(),
-    ProjectArea.findById(projectAreaId).select("status").lean(),
+    ProjectArea.findById(projectAreaId).select("_id").lean(),
   ]);
   if (!area) return;
 
-  const update = { progress: calcProjectProgress(tasks) };
-
-  const allDone = tasks.length > 0 && tasks.every((t) => ["COMPLETED", "ARCHIVED"].includes(t.status));
-  const anyStarted = tasks.some((t) =>
-    ["IN_PROGRESS", "UNDER_REVIEW", "PAUSED", "BLOCKED", "ACCEPTED"].includes(t.status)
-  );
-
-  if (allDone) update.status = "COMPLETED";
-  else if (anyStarted) update.status = "IN_PROGRESS";
-  else if (!tasks.length) {
-    // Every task was removed, so an auto-set IN_PROGRESS/COMPLETED must not stick.
-    if (["IN_PROGRESS", "COMPLETED"].includes(area.status)) update.status = "NOT_STARTED";
-  } else if (area.status === "COMPLETED") {
-    // A finished area got fresh or reopened work, so it is no longer complete.
-    update.status = "IN_PROGRESS";
-  }
-
-  await ProjectArea.findByIdAndUpdate(projectAreaId, update);
+  await ProjectArea.findByIdAndUpdate(projectAreaId, {
+    progress: calcProjectProgress(tasks),
+    status: deriveAreaStatusFromTasks(tasks),
+  });
 };
 
 const checkDependenciesForTask = async (task) => {
@@ -186,6 +173,7 @@ const pauseActiveTaskForEmployee = async (employeeId, user, reason = "Switched t
     reason,
   });
 
+  await refreshAreaProgress(activeTask.projectAreaId);
   return activeTask;
 };
 
@@ -247,11 +235,6 @@ const createTask = async (projectId, user, payload) => {
     await checkDependenciesForTask(task);
   }
 
-  if (area.status === "NOT_STARTED") {
-    area.status = "IN_PROGRESS";
-    await area.save();
-  }
-
   await logProjectActivity({
     projectId,
     user,
@@ -276,6 +259,7 @@ const createTask = async (projectId, user, payload) => {
     });
   }
 
+  await refreshAreaProgress(area._id);
   await projectService.refreshProjectMetrics(projectId);
   return Task.findById(task._id).populate(TASK_POPULATE);
 };
@@ -532,6 +516,7 @@ const updateTask = async (projectId, taskId, user, payload) => {
   }
 
   await task.save();
+  await refreshAreaProgress(task.projectAreaId);
   await projectService.refreshProjectMetrics(projectId);
   return Task.findById(task._id).populate(TASK_POPULATE);
 };
@@ -642,6 +627,8 @@ const assignTask = async (projectId, taskId, user, payload) => {
     newValue: { assignedTo: assigneeId, status: task.status },
   });
 
+  await refreshAreaProgress(task.projectAreaId);
+  await projectService.refreshProjectMetrics(projectId);
   return Task.findById(task._id).populate(TASK_POPULATE);
 };
 
@@ -668,6 +655,8 @@ const acceptTask = async (projectId, taskId, user) => {
     newValue: { status: "ACCEPTED" },
   });
 
+  await refreshAreaProgress(task.projectAreaId);
+  await projectService.refreshProjectMetrics(projectId);
   return Task.findById(task._id).populate(TASK_POPULATE);
 };
 
@@ -770,6 +759,8 @@ const startTask = async (projectId, taskId, user) => {
     newValue: { status: "IN_PROGRESS" },
   });
 
+  await refreshAreaProgress(task.projectAreaId);
+  await projectService.refreshProjectMetrics(projectId);
   return Task.findById(task._id).populate(TASK_POPULATE);
 };
 
@@ -815,6 +806,8 @@ const pauseTask = async (projectId, taskId, user, payload = {}) => {
     reason,
   });
 
+  await refreshAreaProgress(task.projectAreaId);
+  await projectService.refreshProjectMetrics(projectId);
   return Task.findById(task._id).populate(TASK_POPULATE);
 };
 
@@ -882,6 +875,9 @@ const submitForReview = async (projectId, taskId, user, payload = {}, files = []
     entityType: "Task",
     entityId: task._id,
   });
+
+  await refreshAreaProgress(task.projectAreaId);
+  await projectService.refreshProjectMetrics(projectId);
 
   const updatedTask = await Task.findById(task._id).populate(TASK_POPULATE);
   if (!updatedTask) throw createAppError("Task not found after update.", 404);
@@ -1162,6 +1158,8 @@ const handleUrgentRequest = async (projectId, taskId, user, payload) => {
   }
 
   await task.save();
+  await refreshAreaProgress(task.projectAreaId);
+  await projectService.refreshProjectMetrics(projectId);
   return Task.findById(task._id).populate(TASK_POPULATE);
 };
 

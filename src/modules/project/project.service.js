@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Project = require("./project.model");
 const ProjectMember = require("./projectMember.model");
 const ProjectArea = require("./projectArea.model");
@@ -262,6 +263,25 @@ const listProjects = async (user, query = {}) => {
       .lean(),
     Project.countDocuments(filter),
   ]);
+
+  // Employee list cards show allotted task counts instead of project health.
+  if (user.role === "EMPLOYEE" && records.length > 0) {
+    const projectIds = records.map((p) => p._id);
+    const counts = await Task.aggregate([
+      {
+        $match: {
+          assignedTo: new mongoose.Types.ObjectId(user.id),
+          projectId: { $in: projectIds },
+          isArchived: false,
+        },
+      },
+      { $group: { _id: "$projectId", count: { $sum: 1 } } },
+    ]);
+    const countMap = Object.fromEntries(counts.map((c) => [String(c._id), c.count]));
+    for (const project of records) {
+      project.allottedTaskCount = countMap[String(project._id)] || 0;
+    }
+  }
 
   return buildPaginatedResult(records, totalRecords, page, limit);
 };

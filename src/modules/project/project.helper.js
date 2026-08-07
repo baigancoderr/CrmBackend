@@ -110,6 +110,21 @@ const calcProjectProgress = (tasks = []) => {
   return Math.round((completed / tasks.length) * 100);
 };
 
+/** Work-area status follows task progress — never set by hand. */
+const deriveAreaStatusFromTasks = (tasks = []) => {
+  if (!tasks.length) return "NOT_STARTED";
+
+  const progress = calcProjectProgress(tasks);
+  if (progress >= 100) return "COMPLETED";
+
+  const anyActive = tasks.some((t) =>
+    ["IN_PROGRESS", "UNDER_REVIEW", "PAUSED", "BLOCKED", "ACCEPTED"].includes(t.status)
+  );
+  if (progress > 0 || anyActive) return "IN_PROGRESS";
+
+  return "NOT_STARTED";
+};
+
 /** Project % = equal-weight average of each work area's %. Empty areas count as 0%. */
 const calcProjectProgressFromAreas = (tasksByArea = {}) => {
   const areaIds = Object.keys(tasksByArea);
@@ -134,6 +149,7 @@ module.exports = {
   calcDurationMinutes,
   calcProjectHealth,
   calcProjectProgress,
+  deriveAreaStatusFromTasks,
   calcProjectProgressFromAreas,
   isManagerRole,
   isTeamLeadRole,

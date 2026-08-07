@@ -11,9 +11,10 @@ const {
   createAppError,
   logProjectActivity,
   calcProjectProgress,
+  deriveAreaStatusFromTasks,
   USER_POPULATE,
 } = require("./project.helper");
-const { PM_ROLES, AREA_STATUSES } = require("./project.constants");
+const { PM_ROLES } = require("./project.constants");
 
 /** Team Leads and employees only see work areas they lead or hold a task in. */
 const isSelfScopedAreaViewer = (role) => ["TL", "EMPLOYEE"].includes(role);
@@ -94,7 +95,8 @@ const createArea = async (projectId, user, payload, files = []) => {
     estimatedEndDate: payload.estimatedEndDate ? new Date(payload.estimatedEndDate) : null,
     projectLead: payload.projectLead || null,
     projectLeadNameSnapshot,
-    status: payload.status || "NOT_STARTED",
+    status: "NOT_STARTED",
+    progress: 0,
     sortOrder: payload.sortOrder || 0,
     createdBy: user.id,
   });
@@ -196,6 +198,7 @@ const listAreas = async (projectId, user, query = {}) => {
     return {
       ...area,
       progress: calcProjectProgress(areaTasks),
+      status: deriveAreaStatusFromTasks(areaTasks),
       taskCount: areaTasks.length,
       documents: documentsByArea[String(area._id)] || [],
     };
@@ -216,8 +219,10 @@ const updateArea = async (projectId, areaId, user, payload) => {
   if (payload.title !== undefined) area.title = String(payload.title).trim();
   if (payload.description !== undefined) area.description = String(payload.description).trim();
   if (payload.status !== undefined) {
-    if (!AREA_STATUSES.includes(payload.status)) throw createAppError("Invalid status.", 422);
-    area.status = payload.status;
+    throw createAppError(
+      "Work area status is automatic based on task progress and cannot be changed manually.",
+      422
+    );
   }
   if (payload.teamLead !== undefined && isPM) {
     area.teamLead = payload.teamLead || null;
@@ -262,16 +267,36 @@ const updateArea = async (projectId, areaId, user, payload) => {
   await logProjectActivity({
     projectId,
     user,
-    action: payload.status ? "AREA_STATUS_CHANGED" : "AREA_UPDATED",
+    action: "AREA_UPDATED",
     module: "AREA",
     entityType: "ProjectArea",
     entityId: area._id,
-    oldValue: { status: oldValue.status, title: oldValue.title },
-    newValue: { status: area.status, title: area.title },
+    oldValue: { title: oldValue.title },
+    newValue: { title: area.title },
     reason: payload.reason || "",
   });
 
-  return ProjectArea.findById(area._id).populate("teamLead", USER_POPULATE).populate("projectLead", USER_POPULATE);
+  const areaTasks = await Task.find({ projectAreaId: area._id, isArchived: false })
+    .select("status")
+    .lean();
+  const derivedStatus = deriveAreaStatusFromTasks(areaTasks);
+  const derivedProgress = calcProjectProgress(areaTasks);
+  if (area.status !== derivedStatus || area.progress !== derivedProgress) {
+    area.status = derivedStatus;
+    area.progress = derivedProgress;
+    await area.save();
+  }
+
+  const updated = await ProjectArea.findById(area._id)
+    .populate("teamLead", USER_POPULATE)
+    .populate("projectLead", USER_POPULATE)
+    .lean();
+  return {
+    ...updated,
+    progress: derivedProgress,
+    status: derivedStatus,
+    taskCount: areaTasks.length,
+  };
 };
 
 const deleteArea = async (projectId, areaId, user) => {
@@ -414,6 +439,7 @@ const getAreaById = async (projectId, areaId, user) => {
   return {
     ...area,
     progress: calcProjectProgress(areaTasks),
+    status: deriveAreaStatusFromTasks(areaTasks),
     taskCount: areaTasks.length,
     documents,
   };

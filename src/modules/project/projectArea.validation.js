@@ -1,5 +1,3 @@
-const { AREA_STATUSES } = require("./project.constants");
-
 const validateCreateArea = (req, res, next) => {
   const { title } = req.body;
 
@@ -11,10 +9,11 @@ const validateCreateArea = (req, res, next) => {
 };
 
 const validateUpdateArea = (req, res, next) => {
-  const { status } = req.body;
-
-  if (status && !AREA_STATUSES.includes(status)) {
-    return res.status(422).json({ success: false, message: "Invalid area status." });
+  if (req.body?.status !== undefined) {
+    return res.status(422).json({
+      success: false,
+      message: "Work area status is automatic based on task progress and cannot be changed manually.",
+    });
   }
 
   next();
