@@ -22,6 +22,7 @@ const {
   addDependency,
   getActiveTask,
   getElapsedTime,
+  getTaskSessionHistory,
 } = require("./task.controller");
 
 const router = express.Router({ mergeParams: true });
@@ -51,5 +52,6 @@ router.post(
 );
 router.post("/:taskId/dependency", authMiddleware, addDependency);
 router.get("/:taskId/elapsed", authMiddleware, getElapsedTime);
+router.get("/:taskId/sessions", authMiddleware, getTaskSessionHistory);
 
 module.exports = router;

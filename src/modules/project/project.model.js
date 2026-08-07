@@ -18,6 +18,9 @@ const projectSchema = new mongoose.Schema(
     expectedEndDate: { type: Date, default: null, index: true },
     includeWeekends: { type: Boolean, default: false },
     completedAt: { type: Date, default: null },
+    cancelledAt: { type: Date, default: null },
+    cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    cancelReason: { type: String, default: "", trim: true, maxlength: 2000 },
     projectManager: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

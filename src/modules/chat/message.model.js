@@ -40,6 +40,25 @@ const fileMetaSchema = new mongoose.Schema(
   }
 );
 
+const reactionSchema = new mongoose.Schema(
+  {
+    emoji: {
+      type: String,
+      required: true,
+      maxlength: 32,
+    },
+    users: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
+  },
+  {
+    _id: false,
+  }
+);
+
 const messageSchema = new mongoose.Schema(
   {
     conversation: {
@@ -105,6 +124,9 @@ const messageSchema = new mongoose.Schema(
     },
 
     readBy: [readReceiptSchema],
+
+    // A reaction is grouped by emoji so clients can render its count efficiently.
+    reactions: [reactionSchema],
   },
   {
     timestamps: true,

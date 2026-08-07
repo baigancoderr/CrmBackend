@@ -1235,6 +1235,50 @@ const getElapsedTime = async (projectId, taskId, user) => {
   };
 };
 
+/**
+ * Returns the audit trail of every work and pause interval for a task.
+ * This is deliberately limited to PM/HR/Admin roles because it exposes an
+ * employee's detailed working pattern, not merely the task's total hours.
+ */
+const getTaskSessionHistory = async (projectId, taskId, user, query = {}) => {
+  await projectService.assertProjectAccess(projectId, user);
+  if (!PM_ROLES.includes(user.role)) {
+    throw createAppError("Only Project Managers, HR, and Admins can view task session history.", 403);
+  }
+
+  const task = await Task.exists({ _id: taskId, projectId });
+  if (!task) throw createAppError("Task not found.", 404);
+
+  const requestedPage = Number.parseInt(query.page, 10);
+  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+  const limit = 5;
+  const totalRecords = await TaskSession.countDocuments({ taskId });
+  const totalPages = Math.max(1, Math.ceil(totalRecords / limit));
+  const currentPage = Math.min(page, totalPages);
+  const sessions = await TaskSession.find({ taskId })
+    .sort({ startedAt: -1 })
+    .skip((currentPage - 1) * limit)
+    .limit(limit)
+    .lean();
+
+  return {
+    data: sessions.map((session) => ({
+    _id: session._id,
+    employeeId: session.employeeId,
+    employeeName: session.employeeNameSnapshot || "Employee",
+    type: session.type,
+    startedAt: session.startedAt,
+    endedAt: session.endedAt,
+    durationMinutes: session.duration || calcDurationMinutes(session.startedAt, session.endedAt),
+    reason: session.reason || "",
+    })),
+    page: currentPage,
+    limit,
+    totalRecords,
+    totalPages,
+  };
+};
+
 const getActiveTaskForEmployee = async (userId) => {
   const openSession = await TaskSession.findOne({
     employeeId: userId,
@@ -1301,6 +1345,7 @@ module.exports = {
   handleUrgentRequest,
   getActiveTaskForEmployee,
   getElapsedTime,
+  getTaskSessionHistory,
   getTaskHistory,
   getKanbanBoard,
   checkDependenciesForTask,
