@@ -179,6 +179,12 @@ const pauseActiveTaskForEmployee = async (employeeId, user, reason = "Switched t
 
 const createTask = async (projectId, user, payload) => {
   const project = await projectService.assertProjectAccess(projectId, user, { write: true });
+  // If project does not include weekends, prevent task deadlines on weekends
+  if (!project.includeWeekends && payload.deadline) {
+    const dl = new Date(payload.deadline);
+    const day = dl.getDay();
+    if (day === 0 || day === 6) throw createAppError("Project does not include weekends; task deadline cannot be on weekend.", 422);
+  }
   if (project.status !== "ACTIVE") {
     throw createAppError("Tasks can only be created when the project status is ACTIVE.", 403);
   }
@@ -412,7 +418,7 @@ const getTaskById = async (projectId, taskId, user) => {
 };
 
 const updateTask = async (projectId, taskId, user, payload) => {
-  await projectService.assertProjectAccess(projectId, user, { write: true });
+  const project = await projectService.assertProjectAccess(projectId, user, { write: true });
   const task = await Task.findOne({ _id: taskId, projectId });
   if (!task) throw createAppError("Task not found.", 404);
 
@@ -428,6 +434,16 @@ const updateTask = async (projectId, taskId, user, payload) => {
 
   for (const key of allowed) {
     if (payload[key] !== undefined) task[key] = payload[key];
+  }
+
+  // Validate deadline against project weekend rule
+  if (payload.deadline !== undefined) {
+    const newDeadline = payload.deadline ? new Date(payload.deadline) : null;
+    if (newDeadline && !project.includeWeekends) {
+      const day = newDeadline.getDay();
+      if (day === 0 || day === 6) throw createAppError("Project does not include weekends; task deadline cannot be on weekend.", 422);
+    }
+    task.deadline = newDeadline;
   }
 
   if (payload.assignedTo !== undefined) {
@@ -1217,6 +1233,50 @@ const getElapsedTime = async (projectId, taskId, user) => {
   };
 };
 
+/**
+ * Returns the audit trail of every work and pause interval for a task.
+ * This is deliberately limited to PM/HR/Admin roles because it exposes an
+ * employee's detailed working pattern, not merely the task's total hours.
+ */
+const getTaskSessionHistory = async (projectId, taskId, user, query = {}) => {
+  await projectService.assertProjectAccess(projectId, user);
+  if (!PM_ROLES.includes(user.role)) {
+    throw createAppError("Only Project Managers, HR, and Admins can view task session history.", 403);
+  }
+
+  const task = await Task.exists({ _id: taskId, projectId });
+  if (!task) throw createAppError("Task not found.", 404);
+
+  const requestedPage = Number.parseInt(query.page, 10);
+  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+  const limit = 5;
+  const totalRecords = await TaskSession.countDocuments({ taskId });
+  const totalPages = Math.max(1, Math.ceil(totalRecords / limit));
+  const currentPage = Math.min(page, totalPages);
+  const sessions = await TaskSession.find({ taskId })
+    .sort({ startedAt: -1 })
+    .skip((currentPage - 1) * limit)
+    .limit(limit)
+    .lean();
+
+  return {
+    data: sessions.map((session) => ({
+    _id: session._id,
+    employeeId: session.employeeId,
+    employeeName: session.employeeNameSnapshot || "Employee",
+    type: session.type,
+    startedAt: session.startedAt,
+    endedAt: session.endedAt,
+    durationMinutes: session.duration || calcDurationMinutes(session.startedAt, session.endedAt),
+    reason: session.reason || "",
+    })),
+    page: currentPage,
+    limit,
+    totalRecords,
+    totalPages,
+  };
+};
+
 const getActiveTaskForEmployee = async (userId) => {
   const openSession = await TaskSession.findOne({
     employeeId: userId,
@@ -1283,6 +1343,7 @@ module.exports = {
   handleUrgentRequest,
   getActiveTaskForEmployee,
   getElapsedTime,
+  getTaskSessionHistory,
   getTaskHistory,
   getKanbanBoard,
   checkDependenciesForTask,

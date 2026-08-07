@@ -3,21 +3,28 @@ const Project = require("./project.model");
 const ProjectMember = require("./projectMember.model");
 const ProjectArea = require("./projectArea.model");
 const Task = require("./task/task.model");
+const TaskSession = require("./task/taskSession.model");
 const Blocker = require("./blocker/blocker.model");
 const User = require("../user/user.model");
+const taskSessionService = require("./task/taskSession.service");
 const {
   createAppError,
   parsePagination,
   buildPaginatedResult,
   generateProjectCode,
   logProjectActivity,
+  calcDurationMinutes,
   calcProjectHealth,
   calcProjectProgressFromAreas,
   isManagerRole,
   isClientRole,
   USER_POPULATE,
 } = require("./project.helper");
-const { notifyProjectAssigned, notifyProjectClosed } = require("./notifications/projectNotification.service");
+const {
+  notifyProjectAssigned,
+  notifyProjectClosed,
+  notifyProjectCancelled,
+} = require("./notifications/projectNotification.service");
 const { PM_ROLES } = require("./project.constants");
 
 // A TL counts as "added" to a project through any of the assignment paths the UI
@@ -299,6 +306,13 @@ const getProjectById = async (projectId, user) => {
 };
 
 const updateProject = async (projectId, user, payload) => {
+  if (payload.status === "CANCELLED") {
+    return cancelProject(projectId, user, payload);
+  }
+  if (payload.status === "COMPLETED") {
+    return closeProject(projectId, user, payload);
+  }
+
   const project = await assertProjectAccess(projectId, user, { write: true });
 
   const canEdit =
@@ -333,6 +347,20 @@ const updateProject = async (projectId, user, payload) => {
         { upsert: true, new: true }
       );
     }
+  }
+
+  if (payload.status && !["COMPLETED", "ARCHIVED", "CANCELLED"].includes(payload.status)) {
+    project.isArchived = false;
+    project.archivedAt = null;
+    project.archivedBy = null;
+    project.completedAt = null;
+    project.closedAt = null;
+    project.closedBy = null;
+    project.cancelledAt = null;
+    project.cancelledBy = null;
+    project.cancelReason = null;
+    await Task.updateMany({ projectId, status: "ARCHIVED", assignedTo: { $ne: null } }, { status: "ASSIGNED", isArchived: false });
+    await Task.updateMany({ projectId, status: "ARCHIVED", assignedTo: null }, { status: "WAITING", isArchived: false });
   }
 
   await project.save();
@@ -387,6 +415,62 @@ const closeProject = async (projectId, user, payload = {}) => {
   const members = await ProjectMember.find({ projectId, isActive: true }).select("userId");
   await notifyProjectClosed({
     recipientIds: members.map((m) => m.userId),
+    actorId: user.id,
+    project,
+  });
+
+  return getProjectById(projectId, user);
+};
+
+const cancelProject = async (projectId, user, payload = {}) => {
+  const project = await assertProjectAccess(projectId, user, { write: true });
+  if (String(project.projectManager) !== String(user.id) && !PM_ROLES.includes(user.role)) {
+    throw createAppError("Only the Project Manager can cancel the project.", 403);
+  }
+
+  const oldStatus = project.status;
+  project.status = "CANCELLED";
+  project.cancelledAt = new Date();
+  project.cancelledBy = user.id;
+  project.cancelReason = payload.reason || "";
+  project.isArchived = true;
+  project.archivedAt = new Date();
+  project.archivedBy = user.id;
+  await project.save();
+
+  const openTaskSessions = await TaskSession.find({ projectId, endedAt: null });
+  const endedAt = new Date();
+  for (const session of openTaskSessions) {
+    session.endedAt = endedAt;
+    session.duration = session.duration || calcDurationMinutes(session.startedAt, session.endedAt);
+    await session.save();
+  }
+  if (openTaskSessions.length) {
+    await taskSessionService.syncTimeLogForSessions(openTaskSessions);
+  }
+
+  await Task.updateMany({ projectId, status: { $ne: "ARCHIVED" } }, { status: "ARCHIVED", isArchived: true });
+
+  await logProjectActivity({
+    projectId,
+    user,
+    action: "PROJECT_CANCELLED",
+    oldValue: { status: oldStatus },
+    newValue: { status: "CANCELLED", isArchived: true },
+    reason: payload.reason || "",
+    description: "Project cancelled and pending tasks archived.",
+  });
+
+  const members = await ProjectMember.find({ projectId, isActive: true }).select("userId");
+  const recipientIds = [
+    ...new Set([
+      ...members.map((m) => String(m.userId)),
+      String(project.projectManager),
+    ]),
+  ].filter(Boolean);
+
+  await notifyProjectCancelled({
+    recipientIds,
     actorId: user.id,
     project,
   });

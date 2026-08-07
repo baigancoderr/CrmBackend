@@ -180,6 +180,7 @@ const populateMessage = (query) => {
   return query
     .populate("sender", USER_POPULATE_FIELDS)
     .populate("mentions", USER_POPULATE_FIELDS)
+    .populate("reactions.users", "name employeeId profilePhoto")
     .populate({
       path: "forwardedFrom",
       select: "content type sender conversation",
@@ -1267,7 +1268,8 @@ const sendFileMessage = async (
   conversationId,
   file,
   user,
-  io
+  io,
+  replyTo = null
 ) => {
   const isImage = file.mimetype.startsWith("image/");
   // Prefer /api/uploads so nginx setups that only proxy /api can serve files.
@@ -1285,6 +1287,7 @@ const sendFileMessage = async (
         size: file.size,
         mimeType: file.mimetype,
       },
+      replyTo: replyTo || null,
     },
     user,
     io
@@ -1448,6 +1451,82 @@ const deleteMessage = async (
     scope,
     message: updatedMessage,
   };
+};
+
+const reactToMessage = async (messageId, emoji, userId, io) => {
+  const normalizedEmoji = typeof emoji === "string" ? emoji.trim() : "";
+
+  if (!normalizedEmoji) {
+    throw new Error("Reaction emoji is required");
+  }
+
+  const message = await Message.findById(messageId);
+
+  if (!message) {
+    throw new Error("Message not found");
+  }
+
+  if (message.isDeletedForAll) {
+    throw new Error("Message has been deleted");
+  }
+
+  const conversation = await Conversation.findById(message.conversation);
+  assertActiveMember(conversation, userId);
+
+  const reactionIndex = message.reactions.findIndex(
+    (reaction) => reaction.emoji === normalizedEmoji
+  );
+  const existingReaction = message.reactions[reactionIndex];
+  const hasSameReaction = existingReaction?.users.some(
+    (id) => id.toString() === userId.toString()
+  );
+
+  // One user can have only one reaction on a message. Selecting the same
+  // reaction again removes it; selecting another one replaces the old reaction.
+  for (let index = message.reactions.length - 1; index >= 0; index -= 1) {
+    const reaction = message.reactions[index];
+    reaction.users = reaction.users.filter(
+      (id) => id.toString() !== userId.toString()
+    );
+
+    if (reaction.users.length === 0) {
+      message.reactions.splice(index, 1);
+    }
+  }
+
+  if (!hasSameReaction) {
+    const replacementReaction = message.reactions.find(
+      (reaction) => reaction.emoji === normalizedEmoji
+    );
+
+    if (replacementReaction) {
+      replacementReaction.users.push(userId);
+    } else {
+    message.reactions.push({ emoji: normalizedEmoji, users: [userId] });
+    }
+  }
+
+  await message.save();
+
+  const savedMessage = await populateMessage(Message.findById(message._id));
+  const activeMemberIds = conversation.members
+    .filter((member) => !member.leftAt)
+    .map((member) => member.user.toString());
+
+  if (io) {
+    activeMemberIds.forEach((memberId) => {
+      io.to(`user:${memberId}`).emit("message:updated", {
+        conversationId: message.conversation.toString(),
+        message: savedMessage,
+      });
+    });
+  }
+
+  incrementMetric("chat_message_reaction_updated", {
+    userId: userId.toString(),
+  }).catch(() => undefined);
+
+  return savedMessage;
 };
 
 const markConversationAsRead = async (
@@ -2261,6 +2340,7 @@ module.exports = {
   sendFileMessage,
   editMessage,
   deleteMessage,
+  reactToMessage,
   markConversationAsRead,
   getUnreadCount,
   getUsersPresence,

@@ -274,11 +274,13 @@ const uploadMessageFile = async (req, res) => {
       });
     }
 
+    const replyTo = typeof req.body.replyTo === "string" ? req.body.replyTo : null;
     const message = await chatService.sendFileMessage(
       req.params.id,
       req.file,
       req.user,
-      getIo()
+      getIo(),
+      replyTo
     );
 
     return res.status(201).json({
@@ -330,6 +332,28 @@ const deleteMessage = async (req, res) => {
       success: true,
       message: "Message deleted successfully",
       data: result,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const reactToMessage = async (req, res) => {
+  try {
+    const message = await chatService.reactToMessage(
+      req.params.messageId,
+      req.body.emoji,
+      req.user.id,
+      getIo()
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Message reaction updated successfully",
+      data: message,
     });
   } catch (error) {
     return res.status(400).json({
@@ -610,6 +634,7 @@ module.exports = {
   uploadMessageFile,
   editMessage,
   deleteMessage,
+  reactToMessage,
   markConversationAsRead,
   getUnreadCount,
   getMyNotifications,

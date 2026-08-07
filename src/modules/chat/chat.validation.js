@@ -83,6 +83,10 @@ const deleteMessageQuerySchema = Joi.object({
   scope: Joi.string().valid("me", "all").optional(),
 });
 
+const reactToMessageSchema = Joi.object({
+  emoji: Joi.string().trim().min(1).max(32).required(),
+});
+
 const forwardMessageSchema = Joi.object({
   targetConversationIds: Joi.array().items(objectId).min(1).max(10).required(),
 });
@@ -122,6 +126,7 @@ module.exports = {
   getMessagesQuerySchema,
   editMessageSchema,
   deleteMessageQuerySchema,
+  reactToMessageSchema,
   forwardMessageSchema,
   presenceQuerySchema,
   socketConversationSchema,

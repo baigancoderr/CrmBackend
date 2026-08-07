@@ -135,6 +135,15 @@ const getElapsedTime = async (req, res) => {
   }
 };
 
+const getTaskSessionHistory = async (req, res) => {
+  try {
+    const sessions = await taskService.getTaskSessionHistory(req.params.id, req.params.taskId, req.user, req.query);
+    return res.status(200).json({ success: true, data: sessions });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   createTask,
   listTasks,
@@ -151,4 +160,5 @@ module.exports = {
   addDependency,
   getActiveTask,
   getElapsedTime,
+  getTaskSessionHistory,
 };

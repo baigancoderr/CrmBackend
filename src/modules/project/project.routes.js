@@ -12,6 +12,7 @@ const {
   getProjectById,
   updateProject,
   closeProject,
+  cancelProject,
   deleteProject,
   addProjectMembers,
 } = require("./project.controller");
@@ -26,6 +27,7 @@ router.get("/:id", authMiddleware, getProjectById);
 router.patch("/:id", authMiddleware, validateUpdateProject, updateProject);
 router.post("/:id/members", authMiddleware, validateAddProjectMembers, addProjectMembers);
 router.post("/:id/close", authMiddleware, closeProject);
+router.post("/:id/cancel", authMiddleware, cancelProject);
 router.delete("/:id", authMiddleware, roleMiddleware("SUPER_ADMIN", "HR", "PROJECT_MANAGER"), deleteProject);
 
 module.exports = router;

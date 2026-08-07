@@ -54,6 +54,15 @@ const deleteProject = async (req, res) => {
   }
 };
 
+const cancelProject = async (req, res) => {
+  try {
+    const project = await projectService.cancelProject(req.params.id, req.user, req.body);
+    return res.status(200).json({ success: true, message: "Project cancelled successfully.", data: project });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
 const addProjectMembers = async (req, res) => {
   try {
     const project = await projectService.addProjectMembers(req.params.id, req.user, req.body);
@@ -73,6 +82,7 @@ module.exports = {
   getProjectById,
   updateProject,
   closeProject,
+  cancelProject,
   deleteProject,
   addProjectMembers,
 };

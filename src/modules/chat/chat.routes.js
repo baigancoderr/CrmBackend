@@ -27,6 +27,7 @@ const {
   getMessagesQuerySchema,
   editMessageSchema,
   deleteMessageQuerySchema,
+  reactToMessageSchema,
   forwardMessageSchema,
   presenceQuerySchema,
   conversationAttachmentsQuerySchema,
@@ -273,6 +274,15 @@ router.delete(
     query: deleteMessageQuerySchema,
   }),
   chatController.deleteMessage
+);
+
+router.post(
+  "/messages/:messageId/reactions",
+  validateRequest({
+    params: messageIdParamSchema,
+    body: reactToMessageSchema,
+  }),
+  chatController.reactToMessage
 );
 
 router.post(

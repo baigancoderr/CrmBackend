@@ -106,6 +106,20 @@ const notifyProjectClosed = async ({ recipientIds, actorId, project }) => {
   });
 };
 
+const notifyProjectCancelled = async ({ recipientIds, actorId, project }) => {
+  return createNotificationsForRecipients({
+    recipientIds,
+    actorId,
+    type: "PROJECT_CANCELLED",
+    title: "Project cancelled",
+    message: `Project "${project.projectName}" has been cancelled.`,
+    status: "INFO",
+    entityType: "PROJECT",
+    entityId: project._id,
+    link: `/projects/${project._id}`,
+  });
+};
+
 const notifyDeadlineApproaching = async ({ recipientId, task, daysLeft }) => {
   return createNotification({
     recipientId,
@@ -141,6 +155,7 @@ module.exports = {
   notifyBlockerRaised,
   notifyDependencyResolved,
   notifyProjectClosed,
+  notifyProjectCancelled,
   notifyDeadlineApproaching,
   notifyUrgentTaskRequest,
 };
