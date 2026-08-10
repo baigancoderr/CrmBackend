@@ -250,6 +250,9 @@ app.use(errorMiddleware);
     const { startTaskScheduler } = require("./src/modules/project/task/taskScheduler");
     startTaskScheduler();
 
+    const { startAnnouncementScheduler } = require("./src/modules/announcement/announcement.scheduler");
+    startAnnouncementScheduler();
+
     initializeChatSocket(io);
 
     server.listen(PORT, () => {
