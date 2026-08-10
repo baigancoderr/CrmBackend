@@ -123,11 +123,19 @@ const markAsRead = async (req, res, next) => {
 const acknowledgeAnnouncement = async (req, res, next) => {
   try {
     const userId = req.user.id || req.user._id;
+    const response = (req.body?.response || "").toString().toUpperCase();
     const result = await announcementService.acknowledgeAnnouncement(
       req.params.id,
-      userId
+      userId,
+      response
     );
-    return sendResponse(res, 200, true, "Announcement acknowledged successfully", result);
+    const message =
+      response === "YES"
+        ? "Announcement acknowledged as Yes"
+        : response === "NO"
+        ? "Announcement acknowledged as No"
+        : "Acknowledgement recorded";
+    return sendResponse(res, 200, true, message, result);
   } catch (error) {
     next(error);
   }

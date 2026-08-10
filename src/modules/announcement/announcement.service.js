@@ -387,6 +387,7 @@ const getEmployeeAnnouncements = async (user, query) => {
       readAt: readInfo?.readAt || null,
       isAcknowledged: Boolean(readInfo?.acknowledged),
       acknowledgedAt: readInfo?.acknowledgedAt || null,
+      acknowledgeResponse: readInfo?.acknowledgeResponse || null,
     };
   });
 
@@ -474,6 +475,7 @@ const getAnnouncementById = async (id, user) => {
     readAt: readInfo?.readAt || new Date(),
     isAcknowledged: Boolean(readInfo?.acknowledged),
     acknowledgedAt: readInfo?.acknowledgedAt || null,
+    acknowledgeResponse: readInfo?.acknowledgeResponse || null,
   };
 };
 
@@ -494,7 +496,8 @@ const markAsRead = async (id, userId) => {
   return readRecord;
 };
 
-const acknowledgeAnnouncement = async (id, userId) => {
+// response: "YES" | "NO"  (employee's explicit Yes/No answer)
+const acknowledgeAnnouncement = async (id, userId, response) => {
   const announcement = await Announcement.findOne({ _id: id, isDeleted: false });
   if (!announcement) {
     const error = new Error("Announcement not found");
@@ -520,20 +523,40 @@ const acknowledgeAnnouncement = async (id, userId) => {
     throw error;
   }
 
+  // Validate that response is YES or NO
+  const normalizedResponse = (response || "").toString().toUpperCase();
+  if (normalizedResponse !== "YES" && normalizedResponse !== "NO") {
+    const error = new Error("Acknowledgement response must be YES or NO");
+    error.statusCode = 400;
+    throw error;
+  }
+
   const now = new Date();
-  const readRecord = await AnnouncementRead.findOneAndUpdate(
-    { announcementId: id, employeeId: userId },
-    {
-      $set: {
-        acknowledged: true,
-        acknowledgedAt: now,
-      },
-      $setOnInsert: {
-        readAt: now,
-      },
-    },
-    { upsert: true, new: true }
-  );
+  const existingRecord = await AnnouncementRead.findOne({ announcementId: id, employeeId: userId });
+
+  if (existingRecord) {
+    // Response already submitted — do not allow changes
+    if (existingRecord.acknowledged) {
+      const error = new Error("You have already submitted your response for this announcement");
+      error.statusCode = 400;
+      throw error;
+    }
+    // First time responding (record exists but not yet acknowledged)
+    existingRecord.acknowledged = true;
+    existingRecord.acknowledgedAt = now;
+    existingRecord.acknowledgeResponse = normalizedResponse;
+    await existingRecord.save();
+    return existingRecord;
+  }
+
+  const readRecord = await AnnouncementRead.create({
+    announcementId: id,
+    employeeId: userId,
+    readAt: now,
+    acknowledged: true,
+    acknowledgedAt: now,
+    acknowledgeResponse: normalizedResponse,
+  });
 
   return readRecord;
 };
@@ -557,6 +580,8 @@ const getAnnouncementAnalytics = async (id, currentUser) => {
   const totalRead = readRecords.length;
   const totalUnread = Math.max(totalRecipients - totalRead, 0);
   const totalAcknowledged = readRecords.filter((r) => r.acknowledged).length;
+  const totalAcknowledgedYes = readRecords.filter((r) => r.acknowledgeResponse === "YES").length;
+  const totalAcknowledgedNo = readRecords.filter((r) => r.acknowledgeResponse === "NO").length;
   const totalPendingAcknowledgement = announcement.requiresAcknowledgement
     ? Math.max(totalRecipients - totalAcknowledged, 0)
     : 0;
@@ -573,6 +598,8 @@ const getAnnouncementAnalytics = async (id, currentUser) => {
     totalRead,
     totalUnread,
     totalAcknowledged,
+    totalAcknowledgedYes,
+    totalAcknowledgedNo,
     totalPendingAcknowledgement,
     readPercentage,
     acknowledgementPercentage,
@@ -621,6 +648,7 @@ const getAnnouncementReaders = async (id, query, currentUser) => {
       readAt: readInfo?.readAt || null,
       isAcknowledged: Boolean(readInfo?.acknowledged),
       acknowledgedAt: readInfo?.acknowledgedAt || null,
+      acknowledgeResponse: readInfo?.acknowledgeResponse || null,
     };
   });
 

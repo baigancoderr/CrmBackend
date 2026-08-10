@@ -26,6 +26,12 @@ const announcementReadSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    // "YES" = employee agreed/accepted, "NO" = employee declined/disagreed, null = not yet responded
+    acknowledgeResponse: {
+      type: String,
+      enum: ["YES", "NO", null],
+      default: null,
+    },
   },
   {
     timestamps: true,
