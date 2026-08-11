@@ -23,6 +23,14 @@ const allowedMimeTypes = [
   "image/jpg",
   "image/png",
   "image/webp",
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
+  "video/ogg",
+  "video/x-msvideo",
+  "video/x-matroska",
+  "video/mpeg",
+  "video/x-ms-wmv",
   "application/pdf",
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -38,7 +46,7 @@ const fileFilter = (req, file, cb) => {
   } else {
     cb(
       new Error(
-        "Invalid file type. Allowed: JPG, PNG, WEBP, PDF, DOC, DOCX, XLS, XLSX, ZIP."
+        "Invalid file type. Allowed: JPG, PNG, WEBP, MP4, MOV, WEBM, OGG, AVI, MKV, WMV, PDF, DOC, DOCX, XLS, XLSX, ZIP."
       ),
       false
     );

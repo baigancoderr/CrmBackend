@@ -176,6 +176,8 @@ const uploadAttachments = async (req, res, next) => {
       let fileType = "document";
       if (file.mimetype.startsWith("image/")) {
         fileType = "image";
+      } else if (file.mimetype.startsWith("video/")) {
+        fileType = "video";
       } else if (file.mimetype.includes("pdf")) {
         fileType = "pdf";
       } else if (file.mimetype.includes("excel") || file.mimetype.includes("sheet")) {
