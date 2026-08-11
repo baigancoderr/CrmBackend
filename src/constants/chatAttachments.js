@@ -1,4 +1,6 @@
-const CHAT_MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
+const { UPLOAD_LIMITS } = require("./uploadLimits");
+
+const CHAT_MAX_ATTACHMENT_SIZE_BYTES = UPLOAD_LIMITS.ATTACHMENT_MAX_BYTES;
 
 const CHAT_ALLOWED_EXTENSIONS = new Set([
   ".jpg",

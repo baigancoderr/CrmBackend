@@ -44,6 +44,13 @@ router.get(
   attendanceController.getMonthlyTeamSheet
 );
 
+router.get(
+  "/report",
+  authMiddleware,
+  roleMiddleware(...ADMIN_ROLES),
+  attendanceController.getAttendanceReport
+);
+
 router.post(
   "/reconcile-biometric-range",
   authMiddleware,

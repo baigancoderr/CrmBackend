@@ -74,11 +74,17 @@ const getPMDashboard = async (user) => {
 };
 
 const getTLDashboard = async (user) => {
-  if (!isTeamLeadRole(user.role)) return { workAreas: [], pendingApprovals: 0, blockers: 0 };
-
-  const areas = await ProjectArea.find({ teamLead: user.id, isArchived: false })
+  // Team Lead role or anyone assigned as area team/project lead.
+  const areas = await ProjectArea.find({
+    $or: [{ teamLead: user.id }, { projectLead: user.id }],
+    isArchived: false,
+  })
     .populate("projectId", "projectName projectCode status")
     .lean();
+
+  if (!areas.length && !isTeamLeadRole(user.role)) {
+    return { workAreas: [], pendingApprovals: 0, blockers: 0 };
+  }
 
   const areaIds = areas.map((a) => a._id);
 

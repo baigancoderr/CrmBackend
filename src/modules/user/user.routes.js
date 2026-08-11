@@ -54,6 +54,13 @@ router.get(
   userController.getDashboardCounts
 );
 
+router.get(
+  "/dashboard-employee-insights",
+  authMiddleware,
+  roleMiddleware(...ADMIN_ROLES),
+  userController.getDashboardEmployeeInsights
+);
+
 router.patch(
   "/biometric-code/:id",
   authMiddleware,

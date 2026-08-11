@@ -16,6 +16,8 @@ router.use("/leave", require("../modules/leave/leave.routes"));
 
 router.use("/daily-work-report", require("../modules/daily-work-report/dailyWorkReport.routes"));
 
+router.use("/handbook", require("../modules/handbook/handbook.routes"));
+
 router.use("/chat", require("../modules/chat/chat.routes"));
 
 router.use("/notifications", require("../modules/notifications/notification.routes"));
@@ -24,6 +26,7 @@ router.use("/push", require("../modules/push/push.routes"));
 
 router.use("/notes", require("../modules/notes/notes.routes"));
 router.use("/folders", require("../modules/notes/folder.routes"));
+router.use("/storage", require("../modules/storage/storage.routes"));
 
 router.use("/tickets", require("../modules/tickets/ticket.routes"));
 

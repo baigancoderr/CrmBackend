@@ -1,6 +1,5 @@
 const userService = require("./user.service");
-const fs = require("fs");
-const path = require("path");
+const storageService = require("../../services/storage.service");
 
 const createUser = async (req, res) => {
     try {
@@ -42,8 +41,10 @@ const updateProfile = async (req, res) => {
     try {
 
         if (req.file) {
-            req.body.profilePhoto =
-                `/uploads/employees/${req.file.filename}`;
+            req.body.profilePhoto = await storageService.persistUploadedFile(
+                req.file,
+                "employees"
+            );
         }
 
         const result =
@@ -78,7 +79,10 @@ const updateProfilePhoto = async (req, res) => {
             });
         }
 
-        const profilePhoto = `/uploads/employees/${req.file.filename}`;
+        const profilePhoto = await storageService.persistUploadedFile(
+            req.file,
+            "employees"
+        );
 
         const result = await userService.updateProfilePhoto(
             req.user.id,
@@ -233,6 +237,22 @@ const getDashboardCounts = async (req,res) => {
     }
 };
 
+const getDashboardEmployeeInsights = async (req, res) => {
+    try {
+        const result = await userService.getDashboardEmployeeInsights();
+
+        return res.status(200).json({
+            success: true,
+            data: result,
+        });
+    } catch (error) {
+        return res.status(400).json({
+            success: false,
+            message: error.message,
+        });
+    }
+};
+
 const updateBiometricEmpCode = async (req, res) => {
     try {
         const result = await userService.updateBiometricEmpCode(
@@ -268,4 +288,5 @@ module.exports = {
     deleteUserById,
     updateBiometricEmpCode,
     getDashboardCounts,
+    getDashboardEmployeeInsights,
 };

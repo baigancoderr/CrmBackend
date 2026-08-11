@@ -89,6 +89,25 @@ const getAllReports = async (req, res) => {
   }
 };
 
+const getReportStats = async (req, res) => {
+  try {
+    const data = await dailyWorkReportService.getDailyWorkReportStats(
+      req.query,
+      req.user
+    );
+
+    return res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 const reviewReport = async (req, res) => {
   try {
     const data = await dailyWorkReportService.reviewDailyWorkReport(
@@ -116,5 +135,6 @@ module.exports = {
   updateMyReport,
   getMyReports,
   getAllReports,
+  getReportStats,
   reviewReport,
 };

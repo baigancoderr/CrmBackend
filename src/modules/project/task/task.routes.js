@@ -1,6 +1,7 @@
 const express = require("express");
 const authMiddleware = require("../../../middleware/auth.middleware");
 const ticketUpload = require("../../../middleware/ticketUpload.middleware");
+const { UPLOAD_MAX_FILES } = require("../../../constants/uploadLimits");
 const {
   validateCreateTask,
   validateUpdateTask,
@@ -40,13 +41,13 @@ router.post("/:taskId/pause", authMiddleware, pauseTask);
 router.post(
   "/:taskId/submit",
   authMiddleware,
-  ticketUpload.array("attachments", 5),
+  ticketUpload.array("attachments", UPLOAD_MAX_FILES.TASK_ATTACHMENTS),
   submitForReview
 );
 router.post(
   "/:taskId/review",
   authMiddleware,
-  ticketUpload.array("attachments", 5),
+  ticketUpload.array("attachments", UPLOAD_MAX_FILES.TASK_ATTACHMENTS),
   validateReviewTask,
   reviewTask
 );

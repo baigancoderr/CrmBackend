@@ -38,6 +38,13 @@ router.get(
 );
 
 router.get(
+  "/stats",
+  authMiddleware,
+  roleMiddleware(...REVIEWER_ROLES),
+  dailyWorkReportController.getReportStats
+);
+
+router.get(
   "/all",
   authMiddleware,
   roleMiddleware(...REVIEWER_ROLES),

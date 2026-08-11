@@ -1,5 +1,6 @@
 const TaskComment = require("./taskComment.model");
 const projectService = require("../project.service");
+const storageService = require("../../../services/storage.service");
 const { createAppError, logProjectActivity } = require("../project.helper");
 const User = require("../../user/user.model");
 
@@ -29,12 +30,16 @@ const addComment = async (projectId, taskId, user, payload, files = []) => {
     mentionedIds.push(...payload.mentionedUsers);
   }
 
-  const attachments = files.map((f) => ({
-    fileName: f.originalname,
-    fileUrl: `/uploads/tickets/${f.filename}`,
-    fileSize: f.size,
-    mimeType: f.mimetype,
-  }));
+  const attachments = [];
+
+  for (const file of files) {
+    attachments.push({
+      fileName: file.originalname,
+      fileUrl: await storageService.persistUploadedFile(file, "tickets"),
+      fileSize: file.size,
+      mimeType: file.mimetype,
+    });
+  }
 
   const comment = await TaskComment.create({
     taskId,

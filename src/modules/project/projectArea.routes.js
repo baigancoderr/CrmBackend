@@ -1,6 +1,7 @@
 const express = require("express");
 const authMiddleware = require("../../middleware/auth.middleware");
 const areaDocumentUpload = require("../../middleware/areaDocument.upload.middleware");
+const { UPLOAD_MAX_FILES } = require("../../constants/uploadLimits");
 const { validateCreateArea, validateUpdateArea } = require("./projectArea.validation");
 const {
   createArea,
@@ -16,13 +17,13 @@ const {
 
 const router = express.Router({ mergeParams: true });
 
-router.post("/", authMiddleware, areaDocumentUpload.array("documents", 10), validateCreateArea, createArea);
+router.post("/", authMiddleware, areaDocumentUpload.array("documents", UPLOAD_MAX_FILES.AREA_DOCUMENTS), validateCreateArea, createArea);
 router.get("/", authMiddleware, listAreas);
 router.get("/:areaId", authMiddleware, getAreaById);
 router.patch("/:areaId", authMiddleware, validateUpdateArea, updateArea);
 router.post("/:areaId/assign-lead", authMiddleware, assignTeamLead);
 router.delete("/:areaId", authMiddleware, deleteArea);
-router.post("/:areaId/documents", authMiddleware, areaDocumentUpload.array("documents", 10), uploadAreaDocuments);
+router.post("/:areaId/documents", authMiddleware, areaDocumentUpload.array("documents", UPLOAD_MAX_FILES.AREA_DOCUMENTS), uploadAreaDocuments);
 router.get("/:areaId/documents", authMiddleware, listAreaDocuments);
 router.delete("/:areaId/documents/:docId", authMiddleware, deleteAreaDocument);
 

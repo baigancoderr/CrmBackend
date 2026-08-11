@@ -1,10 +1,9 @@
 const mongoose = require("mongoose");
-const fs = require("fs/promises");
-const path = require("path");
 const Notes = require("./notes.model");
 const Folder = require("./folder.model");
 const NoteShare = require("./noteShare.model");
 const User = require("../user/user.model");
+const storageService = require("../../services/storage.service");
 
 const USER_POPULATE_FIELDS = "name email role designation department profilePhoto";
 
@@ -117,16 +116,16 @@ const createNote = async (ownerId, data, files = []) => {
   }
 
   // Handle attachments mapping
-  const attachments = files.map((file) => {
-    // Generate static file URL
-    const fileUrl = `/uploads/notes/${file.filename}`;
-    return {
+  const attachments = [];
+
+  for (const file of files) {
+    attachments.push({
       fileName: file.originalname,
-      fileUrl,
+      fileUrl: await storageService.persistUploadedFile(file, "notes"),
       fileType: file.mimetype,
       fileSize: file.size,
-    };
-  });
+    });
+  }
 
   // Handle tags parsing (can be array or comma-separated string)
   let tags = [];
@@ -249,15 +248,17 @@ const updateNote = async (userId, noteId, data, files = []) => {
 
   // Handle file append
   if (files && files.length > 0) {
-    const newAttachments = files.map((file) => {
-      const fileUrl = `/uploads/notes/${file.filename}`;
-      return {
+    const newAttachments = [];
+
+    for (const file of files) {
+      newAttachments.push({
         fileName: file.originalname,
-        fileUrl,
+        fileUrl: await storageService.persistUploadedFile(file, "notes"),
         fileType: file.mimetype,
         fileSize: file.size,
-      };
-    });
+      });
+    }
+
     note.attachments.push(...newAttachments);
   }
 
@@ -279,13 +280,7 @@ const updateNote = async (userId, noteId, data, files = []) => {
       for (const url of toRemove) {
         const match = note.attachments.find((att) => att.fileUrl === url);
         if (match) {
-          const filename = path.basename(match.fileUrl);
-          const fullPath = path.join(__dirname, "../../uploads/notes", filename);
-          try {
-            await fs.unlink(fullPath);
-          } catch (err) {
-            console.error(`Failed to delete physical file: ${fullPath}`, err.message);
-          }
+          await storageService.deleteStoredFile(match.fileUrl);
         }
       }
       note.attachments = note.attachments.filter((att) => !toRemove.includes(att.fileUrl));
@@ -351,13 +346,7 @@ const permanentDeleteNote = async (userId, noteId) => {
   // Delete physical files
   if (note.attachments && note.attachments.length > 0) {
     for (const att of note.attachments) {
-      const filename = path.basename(att.fileUrl);
-      const fullPath = path.join(__dirname, "../../uploads/notes", filename);
-      try {
-        await fs.unlink(fullPath);
-      } catch (err) {
-        console.error(`Failed to delete physical file: ${fullPath}`, err.message);
-      }
+      await storageService.deleteStoredFile(att.fileUrl);
     }
   }
 

@@ -3,7 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const { UPLOAD_LIMITS, UPLOAD_MAX_FILES } = require("../constants/uploadLimits");
 
-const uploadDir = path.join(__dirname, "../../uploads/tickets");
+const uploadDir = path.join(__dirname, "../../uploads/projects");
 
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
@@ -14,16 +14,12 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
-    const ext = path.extname(file.originalname);
-    cb(null, Date.now() + "-" + Math.round(Math.random() * 1e9) + ext);
+    const ext = path.extname(file.originalname || "");
+    cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
   },
 });
 
 const allowedMimeTypes = [
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/webp",
   "application/pdf",
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -31,19 +27,18 @@ const allowedMimeTypes = [
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/zip",
   "application/x-zip-compressed",
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "text/plain",
 ];
 
 const fileFilter = (req, file, cb) => {
-  if (allowedMimeTypes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(
-      new Error(
-        "Invalid file type. Allowed: JPG, PNG, WEBP, PDF, DOC, DOCX, XLS, XLSX, ZIP."
-      ),
-      false
-    );
-  }
+  const isAllowed =
+    allowedMimeTypes.includes(file.mimetype) || file.mimetype.startsWith("image/");
+  if (isAllowed) cb(null, true);
+  else cb(new Error("Only PDF, Word, Excel, images, zip, and text files are allowed."), false);
 };
 
 module.exports = multer({
@@ -51,6 +46,6 @@ module.exports = multer({
   fileFilter,
   limits: {
     fileSize: UPLOAD_LIMITS.ATTACHMENT_MAX_BYTES,
-    files: UPLOAD_MAX_FILES.TICKET,
+    files: UPLOAD_MAX_FILES.PROJECT_DOCUMENTS,
   },
 });

@@ -7,6 +7,7 @@ const ProjectArea = require("../projectArea.model");
 const Project = require("../project.model");
 const User = require("../../user/user.model");
 const projectService = require("../project.service");
+const storageService = require("../../../services/storage.service");
 const taskSessionService = require("./taskSession.service");
 const {
   createAppError,
@@ -17,7 +18,8 @@ const {
   calcDurationMinutes,
   calcProjectProgress,
   deriveAreaStatusFromTasks,
-  isTeamLeadRole,
+  isAreaLead,
+  leadRefId,
   USER_POPULATE,
 } = require("../project.helper");
 const {
@@ -29,7 +31,6 @@ const {
 } = require("../notifications/projectNotification.service");
 const {
   PM_ROLES,
-  TL_ROLES,
   TASK_STATUSES,
   TASK_PRIORITIES,
 } = require("../project.constants");
@@ -45,17 +46,80 @@ const TASK_POPULATE = [
 /** Employees only ever see tasks assigned to them; leads and above see the whole project. */
 const isSelfScopedTaskViewer = (role) => role === "EMPLOYEE";
 
+const findLedAreaIds = async (projectId, userId) =>
+  ProjectArea.find({
+    projectId,
+    isArchived: { $ne: true },
+    $or: [{ teamLead: userId }, { projectLead: userId }],
+  }).distinct("_id");
+
+const applyEmployeeTaskScope = async (filter, projectId, user, query = {}) => {
+  if (!isSelfScopedTaskViewer(user.role)) return filter;
+
+  const ledAreaIds = await findLedAreaIds(projectId, user.id);
+  const requestedAreaId = query.projectAreaId ? String(query.projectAreaId) : "";
+
+  if (requestedAreaId && ledAreaIds.some((id) => String(id) === requestedAreaId)) {
+    return filter;
+  }
+
+  if (ledAreaIds.length) {
+    filter.$or = [{ assignedTo: user.id }, { projectAreaId: { $in: ledAreaIds } }];
+    return filter;
+  }
+
+  filter.assignedTo = user.id;
+  return filter;
+};
+
+const notifyAreaLeads = async (area, notifyFn, payload) => {
+  if (!area) return;
+  const recipientIds = [...new Set(
+    [area.teamLead, area.projectLead]
+      .filter(Boolean)
+      .map((id) => String(id))
+  )];
+  await Promise.all(recipientIds.map((recipientId) => notifyFn({ ...payload, recipientId })));
+};
+
 const assertCanManageArea = async (projectId, areaId, user) => {
   const area = await ProjectArea.findOne({ _id: areaId, projectId });
   if (!area) throw createAppError("Work area not found.", 404);
 
   const isPM = PM_ROLES.includes(user.role);
-  const isAreaTL = String(area.teamLead) === String(user.id);
-  const isProjectLead = String(area.projectLead) === String(user.id);
-  if (!isPM && !isAreaTL && !isProjectLead) {
+  if (!isPM && !isAreaLead(area, user.id)) {
     throw createAppError("Only Team Lead, Project Lead, or Project Manager can manage tasks in this area.", 403);
   }
   return area;
+};
+
+/** Non-PM Project Lead may only assign tasks to EMPLOYEE role users. */
+const assertProjectLeadAssigneeAllowed = async (area, user, assigneeId) => {
+  if (!assigneeId) return;
+  if (PM_ROLES.includes(user.role)) return;
+  if (leadRefId(area.projectLead) !== String(user.id)) return;
+
+  const assignee = await User.findById(assigneeId).select("name role isActive");
+  if (!assignee || !assignee.isActive) throw createAppError("Assignee not found.", 404);
+  if (assignee.role !== "EMPLOYEE") {
+    throw createAppError("Project Lead can only assign tasks to employees.", 403);
+  }
+  return assignee;
+};
+
+/**
+ * Project Lead cannot edit/delete a task that was assigned to them (by PM/TL).
+ * They still manage other members' tasks in the area.
+ */
+const assertProjectLeadCanMutateTask = (area, task, user) => {
+  if (PM_ROLES.includes(user.role)) return;
+  if (leadRefId(area.projectLead) !== String(user.id)) return;
+  if (String(task.assignedTo || "") === String(user.id)) {
+    throw createAppError(
+      "Project Lead cannot edit or delete a task assigned to them.",
+      403
+    );
+  }
 };
 
 const refreshAreaProgress = async (projectAreaId) => {
@@ -193,6 +257,10 @@ const createTask = async (projectId, user, payload) => {
   const title = String(payload.title || "").trim();
   if (!title) throw createAppError("Task title is required.", 422);
 
+  if (payload.assignedTo) {
+    await assertProjectLeadAssigneeAllowed(area, user, payload.assignedTo);
+  }
+
   const task = await Task.create({
     title,
     description: String(payload.description || "").trim(),
@@ -214,7 +282,9 @@ const createTask = async (projectId, user, payload) => {
   });
 
   if (payload.assignedTo) {
-    const assignee = await User.findById(payload.assignedTo).select("name");
+    const assignee =
+      (await assertProjectLeadAssigneeAllowed(area, user, payload.assignedTo)) ||
+      (await User.findById(payload.assignedTo).select("name"));
     task.assignedToNameSnapshot = assignee?.name || "";
     await task.save();
     if (assignee) {
@@ -283,8 +353,8 @@ const listTasks = async (projectId, user, query = {}) => {
 
   if (query.mine === "true") filter.assignedTo = user.id;
 
-  // Applied last so no query param can widen an employee's scope.
-  if (isSelfScopedTaskViewer(user.role)) filter.assignedTo = user.id;
+  // Employees see own tasks, plus all tasks in areas they lead (team/project lead).
+  await applyEmployeeTaskScope(filter, projectId, user, query);
 
   const [records, totalRecords] = await Promise.all([
     Task.find(filter).sort(sort).skip(skip).limit(limit).populate(TASK_POPULATE).lean(),
@@ -410,7 +480,10 @@ const getTaskById = async (projectId, taskId, user) => {
 
   if (isSelfScopedTaskViewer(user.role)) {
     const assigneeId = task.assignedTo?._id || task.assignedTo;
-    if (String(assigneeId) !== String(user.id)) throw createAppError("Access denied.", 403);
+    if (String(assigneeId) !== String(user.id)) {
+      const area = await ProjectArea.findById(task.projectAreaId).select("teamLead projectLead");
+      if (!isAreaLead(area, user.id)) throw createAppError("Access denied.", 403);
+    }
   }
 
   const attachments = await TaskAttachment.find({ projectId, taskId: task._id }).sort({ createdAt: -1 }).lean();
@@ -426,7 +499,8 @@ const updateTask = async (projectId, taskId, user, payload) => {
     throw createAppError("Employees cannot mark tasks as completed. Submit for review instead.", 403);
   }
 
-  await assertCanManageArea(projectId, task.projectAreaId, user);
+  const area = await assertCanManageArea(projectId, task.projectAreaId, user);
+  assertProjectLeadCanMutateTask(area, task, user);
 
   const oldValue = task.toObject();
   const allowed = ["title", "description", "priority", "estimatedHours", "deadline", "sprintId", "kanbanOrder"];
@@ -448,7 +522,9 @@ const updateTask = async (projectId, taskId, user, payload) => {
 
   if (payload.assignedTo !== undefined) {
     if (payload.assignedTo) {
-      const assignee = await User.findOne({ _id: payload.assignedTo, isActive: true }).select("name");
+      const assignee =
+        (await assertProjectLeadAssigneeAllowed(area, user, payload.assignedTo)) ||
+        (await User.findOne({ _id: payload.assignedTo, isActive: true }).select("name"));
       if (!assignee) throw createAppError("Assignee not found.", 404);
 
       if (String(task.assignedTo) !== String(assignee._id)) {
@@ -541,7 +617,8 @@ const deleteTask = async (projectId, taskId, user) => {
   await projectService.assertProjectAccess(projectId, user, { write: true });
   const task = await Task.findOne({ _id: taskId, projectId, isArchived: false });
   if (!task) throw createAppError("Task not found.", 404);
-  await assertCanManageArea(projectId, task.projectAreaId, user);
+  const area = await assertCanManageArea(projectId, task.projectAreaId, user);
+  assertProjectLeadCanMutateTask(area, task, user);
 
   const oldStatus = task.status;
   const openSessions = await TaskSession.find({ taskId: task._id, endedAt: null });
@@ -593,10 +670,13 @@ const assignTask = async (projectId, taskId, user, payload) => {
   const task = await Task.findOne({ _id: taskId, projectId });
   if (!task) throw createAppError("Task not found.", 404);
 
-  await assertCanManageArea(projectId, task.projectAreaId, user);
+  const area = await assertCanManageArea(projectId, task.projectAreaId, user);
+  assertProjectLeadCanMutateTask(area, task, user);
 
   const assigneeId = payload.assignedTo;
-  const assignee = await User.findOne({ _id: assigneeId, isActive: true }).select("name");
+  const assignee =
+    (await assertProjectLeadAssigneeAllowed(area, user, assigneeId)) ||
+    (await User.findOne({ _id: assigneeId, isActive: true }).select("name"));
   if (!assignee) throw createAppError("Assignee not found.", 404);
 
   const oldStatus = task.status;
@@ -783,8 +863,13 @@ const startTask = async (projectId, taskId, user) => {
 const pauseTask = async (projectId, taskId, user, payload = {}) => {
   const task = await Task.findOne({ _id: taskId, projectId });
   if (!task) throw createAppError("Task not found.", 404);
-  if (String(task.assignedTo) !== String(user.id) && !isTeamLeadRole(user.role)) {
-    throw createAppError("Access denied.", 403);
+  if (String(task.assignedTo) !== String(user.id)) {
+    if (PM_ROLES.includes(user.role)) {
+      // managers may pause any task in the project
+    } else {
+      const area = await ProjectArea.findById(task.projectAreaId).select("teamLead projectLead");
+      if (!isAreaLead(area, user.id)) throw createAppError("Access denied.", 403);
+    }
   }
   if (task.status === "BLOCKED") {
     throw createAppError("Task is blocked. Resolve the blocker instead of pausing.", 422);
@@ -844,16 +929,21 @@ const submitForReview = async (projectId, taskId, user, payload = {}, files = []
 
   if (files.length) {
     const TaskAttachment = require("./taskAttachment.model");
-    const attachments = files.map((file) => ({
-      taskId: task._id,
-      projectId,
-      fileName: file.originalname,
-      fileUrl: `/uploads/tickets/${file.filename}`,
-      fileSize: file.size,
-      mimeType: file.mimetype,
-      uploadedBy: user.id,
-      uploadedByNameSnapshot: user.name,
-    }));
+    const attachments = [];
+
+    for (const file of files) {
+      attachments.push({
+        taskId: task._id,
+        projectId,
+        fileName: file.originalname,
+        fileUrl: await storageService.persistUploadedFile(file, "tickets"),
+        fileSize: file.size,
+        mimeType: file.mimetype,
+        uploadedBy: user.id,
+        uploadedByNameSnapshot: user.name,
+      });
+    }
+
     await TaskAttachment.insertMany(attachments);
   }
 
@@ -864,14 +954,11 @@ const submitForReview = async (projectId, taskId, user, payload = {}, files = []
     await taskSessionService.syncTimeLogForTask(task._id, user.id);
   }
 
-  const area = await ProjectArea.findById(task.projectAreaId).select("teamLead");
-  if (area?.teamLead) {
-    await notifyTaskSubmittedForReview({
-      recipientId: area.teamLead,
-      actorId: user.id,
-      task,
-    });
-  }
+  const area = await ProjectArea.findById(task.projectAreaId).select("teamLead projectLead");
+  await notifyAreaLeads(area, notifyTaskSubmittedForReview, {
+    actorId: user.id,
+    task,
+  });
 
   await logTaskHistory({
     taskId: task._id,
@@ -906,7 +993,7 @@ const reviewTask = async (projectId, taskId, user, payload, files = []) => {
   if (!task) throw createAppError("Task not found.", 404);
 
   const area = await assertCanManageArea(projectId, task.projectAreaId, user);
-  const canReview = String(area.teamLead) === String(user.id) || String(area.projectLead) === String(user.id) || PM_ROLES.includes(user.role);
+  const canReview = isAreaLead(area, user.id) || PM_ROLES.includes(user.role);
   if (!canReview) {
     throw createAppError("Only the Team Lead or Project Lead can review this task.", 403);
   }
@@ -959,16 +1046,21 @@ const reviewTask = async (projectId, taskId, user, payload, files = []) => {
 
   if (files.length) {
     const TaskAttachment = require("./taskAttachment.model");
-    const attachments = files.map((file) => ({
-      taskId: task._id,
-      projectId,
-      fileName: file.originalname,
-      fileUrl: `/uploads/tickets/${file.filename}`,
-      fileSize: file.size,
-      mimeType: file.mimetype,
-      uploadedBy: user.id,
-      uploadedByNameSnapshot: user.name,
-    }));
+    const attachments = [];
+
+    for (const file of files) {
+      attachments.push({
+        taskId: task._id,
+        projectId,
+        fileName: file.originalname,
+        fileUrl: await storageService.persistUploadedFile(file, "tickets"),
+        fileSize: file.size,
+        mimeType: file.mimetype,
+        uploadedBy: user.id,
+        uploadedByNameSnapshot: user.name,
+      });
+    }
+
     await TaskAttachment.insertMany(attachments);
   }
 
@@ -1071,15 +1163,12 @@ const requestUrgentTask = async (projectId, taskId, user) => {
   task.urgentRequestedAt = new Date();
   await task.save();
 
-  const area = await ProjectArea.findById(task.projectAreaId).select("teamLead");
-  if (area?.teamLead) {
-    await notifyUrgentTaskRequest({
-      recipientId: area.teamLead,
-      actorId: user.id,
-      task,
-      employeeName: user.name,
-    });
-  }
+  const area = await ProjectArea.findById(task.projectAreaId).select("teamLead projectLead");
+  await notifyAreaLeads(area, notifyUrgentTaskRequest, {
+    actorId: user.id,
+    task,
+    employeeName: user.name,
+  });
 
   await logProjectActivity({
     projectId,
@@ -1098,8 +1187,8 @@ const handleUrgentRequest = async (projectId, taskId, user, payload) => {
   if (!task) throw createAppError("Task not found.", 404);
 
   const area = await assertCanManageArea(projectId, task.projectAreaId, user);
-  if (String(area.teamLead) !== String(user.id) && !PM_ROLES.includes(user.role)) {
-    throw createAppError("Only Team Lead can handle urgent requests.", 403);
+  if (!isAreaLead(area, user.id) && !PM_ROLES.includes(user.role)) {
+    throw createAppError("Only Team Lead or Project Lead can handle urgent requests.", 403);
   }
 
   const decision = String(payload.decision || "").toUpperCase();
@@ -1306,7 +1395,7 @@ const getKanbanBoard = async (projectId, user, query = {}) => {
   await projectService.assertProjectAccess(projectId, user);
   const filter = { projectId, isArchived: false };
   if (query.projectAreaId) filter.projectAreaId = query.projectAreaId;
-  if (isSelfScopedTaskViewer(user.role)) filter.assignedTo = user.id;
+  await applyEmployeeTaskScope(filter, projectId, user, query);
 
   const tasks = await Task.find(filter)
     .sort({ kanbanOrder: 1, createdAt: 1 })

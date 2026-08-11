@@ -19,6 +19,7 @@ const routes = require("./src/routes");
 const {
   initializeChatSocket,
 } = require("./src/modules/chat/chat.socket");
+const { UPLOAD_LIMITS } = require("./src/constants/uploadLimits");
 
 const app = express();
 const server = http.createServer(app);
@@ -86,8 +87,8 @@ const corsOptions = {
 // Middlewares
 app.use(cors(corsOptions));
 app.options("/{*splat}", cors(corsOptions));
-// Daily work report attachments are sent as base64 JSON (up to 5 MB file).
-app.use(express.json({ limit: "8mb" }));
+// Daily work report attachments are sent as base64 JSON.
+app.use(express.json({ limit: UPLOAD_LIMITS.EXPRESS_JSON_BODY_LIMIT }));
 app.use(cookieParser());
 
 // Public disk uploads. Mount /api/uploads before /api routes so reverse
