@@ -1,6 +1,7 @@
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const { UPLOAD_LIMITS } = require("../constants/uploadLimits");
 
 const uploadDir = path.join(__dirname, "../../uploads/notes");
 
@@ -60,6 +61,6 @@ module.exports = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB file limit
+    fileSize: UPLOAD_LIMITS.ATTACHMENT_MAX_BYTES,
   },
 });

@@ -1,4 +1,5 @@
 const Attendance = require("./attendance.model");
+const Holiday = require("../holiday/holiday.model");
 const User = require("../user/user.model");
 const mongoose = require("mongoose");
 const ProcessedBiometricPunch = require("../biometric/processedPunch.model");
@@ -1854,7 +1855,8 @@ const backfillMissingClockOutsForDateRange = async (
   return filled;
 };
 
-const getAttendanceDashboardDetails = async (dateKey) => {
+const getAttendanceDashboardDetails = async (dateKey, options = {}) => {
+  const light = Boolean(options?.light);
   const today = dateKey || getTodayDate();
 
   const activeEmployees = await User.find({
@@ -1880,36 +1882,51 @@ const getAttendanceDashboardDetails = async (dateKey) => {
     }
   });
 
-  const biometricInOutResponse =
-    await fetchBiometricInOutRecords(today);
+  let biometricInOutResponse = {
+    records: [],
+    total: 0,
+    error: null,
+  };
 
-  await syncAttendanceFromBiometricInOut(
-    today,
-    biometricInOutResponse.records,
-    employeeById,
-    employeeByCode
-  );
+  if (!light) {
+    biometricInOutResponse = await fetchBiometricInOutRecords(today);
 
-  const todayRecords = await Attendance.find({
+    await syncAttendanceFromBiometricInOut(
+      today,
+      biometricInOutResponse.records,
+      employeeById,
+      employeeByCode
+    );
+  }
+
+  const todayRecordsQuery = Attendance.find({
     date: today,
   });
 
-  for (const record of todayRecords) {
-    if (!record?.employee) {
-      continue;
-    }
+  if (light) {
+    todayRecordsQuery.lean();
+  }
 
-    const employee = employeeById.get(String(record.employee));
-    if (!employee) {
-      continue;
-    }
+  const todayRecords = await todayRecordsQuery;
 
-    await hydrateAttendancePunchesFromProcessed(
-      record,
-      record.employee,
-      today
-    );
-    await recalculateAttendanceRecordMetrics(record, employee, today);
+  if (!light) {
+    for (const record of todayRecords) {
+      if (!record?.employee) {
+        continue;
+      }
+
+      const employee = employeeById.get(String(record.employee));
+      if (!employee) {
+        continue;
+      }
+
+      await hydrateAttendancePunchesFromProcessed(
+        record,
+        record.employee,
+        today
+      );
+      await recalculateAttendanceRecordMetrics(record, employee, today);
+    }
   }
 
   const attendanceByEmployeeId = new Map();
@@ -2058,10 +2075,13 @@ const getAttendanceDashboardDetails = async (dateKey) => {
       ),
     }));
 
-  const { start: startOfDay, end: endOfDay } = getIstDayBounds(today);
+  let recentBiometricPunches = [];
+  let biometricSyncResponse = { data: null };
 
-  const recentBiometricPunches =
-    await ProcessedBiometricPunch.find({
+  if (!light) {
+    const { start: startOfDay, end: endOfDay } = getIstDayBounds(today);
+
+    recentBiometricPunches = await ProcessedBiometricPunch.find({
       punchDate: {
         $gte: startOfDay,
         $lte: endOfDay,
@@ -2075,52 +2095,56 @@ const getAttendanceDashboardDetails = async (dateKey) => {
       .limit(50)
       .lean();
 
-  const biometricSyncResponse =
-    await getBiometricSyncStatus();
+    biometricSyncResponse = await getBiometricSyncStatus();
+  }
 
   const biometricByEmployeeId = new Map();
   const biometricByEmpCode = new Map();
-  biometricInOutResponse.records.forEach((record) => {
-    const employeeId = record.crmEmployee?._id
-      ? String(record.crmEmployee._id)
-      : "";
-    const normalizedCode = normalizeBiometricCode(
-      record.crmEmployee?.biometricEmpCode || record.empcode
-    );
 
-    if (employeeId && !biometricByEmployeeId.has(employeeId)) {
-      biometricByEmployeeId.set(employeeId, record);
-    }
-
-    if (normalizedCode && !biometricByEmpCode.has(normalizedCode)) {
-      biometricByEmpCode.set(normalizedCode, record);
-    }
-  });
-
-  const employeeAttendanceList = activeEmployees.map(
-    (employee) => {
-      const record = attendanceByEmployeeId.get(
-        String(employee._id)
+  if (!light) {
+    biometricInOutResponse.records.forEach((record) => {
+      const employeeId = record.crmEmployee?._id
+        ? String(record.crmEmployee._id)
+        : "";
+      const normalizedCode = normalizeBiometricCode(
+        record.crmEmployee?.biometricEmpCode || record.empcode
       );
+
+      if (employeeId && !biometricByEmployeeId.has(employeeId)) {
+        biometricByEmployeeId.set(employeeId, record);
+      }
+
+      if (normalizedCode && !biometricByEmpCode.has(normalizedCode)) {
+        biometricByEmpCode.set(normalizedCode, record);
+      }
+    });
+  }
+
+  const employeeAttendanceList = activeEmployees.map((employee) => {
+    const record = attendanceByEmployeeId.get(String(employee._id));
+    let attendanceSummary = formatAttendanceSummary(record, employee, today);
+
+    if (!light) {
       const normalizedCode = normalizeBiometricCode(
         employee.biometricEmpCode || employee.employeeId?.replace(/^DOB/i, "")
       );
       const biometricRecord =
         biometricByEmployeeId.get(String(employee._id)) ||
         biometricByEmpCode.get(normalizedCode);
-      const attendanceSummary = getAttendanceFromBiometric(
-        formatAttendanceSummary(record, employee, today),
+
+      attendanceSummary = getAttendanceFromBiometric(
+        attendanceSummary,
         biometricRecord,
         today,
         employee
       );
-
-      return {
-        employee: formatEmployeeSummary(employee),
-        attendance: attendanceSummary,
-      };
     }
-  );
+
+    return {
+      employee: formatEmployeeSummary(employee),
+      attendance: attendanceSummary,
+    };
+  });
 
   const absentEmployees = employeeAttendanceList.filter((item) =>
     isEmployeeAbsent(item.attendance)
@@ -2446,6 +2470,53 @@ const syncMonthlyAttendanceFromBiometric = async (
   console.log(
     `[Biometric Month Sync] Hydrating ${dateKeys.length} day(s) for ${month}/${year}`
   );
+  for (const dateKey of dateKeys) {
+    await syncAttendanceFromBiometricInOut(
+      dateKey,
+      rangeResponse.recordsByDate[dateKey],
+      employeeById,
+      employeeByCode
+    );
+  }
+};
+
+const syncAttendanceRangeFromBiometric = async (fromDate, toDate) => {
+  if (!fromDate || !toDate || fromDate > toDate) {
+    return;
+  }
+
+  const activeEmployees = await User.find({
+    isActive: true,
+  })
+    .select("employeeId biometricEmpCode name designation department officeTiming")
+    .lean();
+
+  const employeeById = new Map();
+  const employeeByCode = new Map();
+
+  activeEmployees.forEach((employee) => {
+    employeeById.set(String(employee._id), employee);
+
+    const normalizedCode = normalizeBiometricCode(
+      employee.biometricEmpCode || employee.employeeId?.replace(/^DOB/i, "")
+    );
+
+    if (normalizedCode) {
+      employeeByCode.set(normalizedCode, employee);
+    }
+  });
+
+  const rangeResponse = await fetchBiometricInOutForRange(fromDate, toDate);
+
+  if (rangeResponse.error) {
+    console.warn(
+      `[Attendance Report] Biometric sync ${fromDate}..${toDate} skipped: ${rangeResponse.error}`
+    );
+    return;
+  }
+
+  const dateKeys = Object.keys(rangeResponse.recordsByDate).sort();
+
   for (const dateKey of dateKeys) {
     await syncAttendanceFromBiometricInOut(
       dateKey,
@@ -3061,6 +3132,379 @@ const revokeClockOut = async (attendanceId, reason, updatedBy) => {
   };
 };
 
+const CHART_MONTH_LABELS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+const PRESENT_ATTENDANCE_STATUSES = [
+  "PRESENT",
+  "LATE",
+  "EARLY_LEAVE",
+  "HALF_DAY",
+];
+
+const getMonthDateBounds = (month, year) => {
+  const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const monthEnd = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+
+  return {
+    monthStart,
+    monthEnd,
+    lastDay,
+  };
+};
+
+const countWeekdaysInRange = (fromDate, toDate) => {
+  const keys = getDateKeysBetween(fromDate, toDate);
+  return keys.filter((dateKey) => !isIstWeekendDateKey(dateKey)).length;
+};
+
+const countHolidayDaysInRange = async (rangeStart, rangeEnd) => {
+  const holidays = await Holiday.find({
+    isDeleted: false,
+    isActive: true,
+    fromDate: { $lte: rangeEnd },
+    toDate: { $gte: rangeStart },
+  })
+    .select("fromDate toDate")
+    .lean();
+
+  const daySet = new Set();
+
+  holidays.forEach((holiday) => {
+    const start =
+      holiday.fromDate > rangeStart ? holiday.fromDate : rangeStart;
+    const end = holiday.toDate < rangeEnd ? holiday.toDate : rangeEnd;
+    const keys = getDateKeysBetween(start, end);
+
+    keys.forEach((dateKey) => {
+      if (!isIstWeekendDateKey(dateKey)) {
+        daySet.add(dateKey);
+      }
+    });
+  });
+
+  return daySet.size;
+};
+
+const calcPercentChange = (current, previous) => {
+  if (previous === 0) {
+    return current > 0 ? 100 : 0;
+  }
+
+  return Number((((current - previous) / previous) * 100).toFixed(2));
+};
+
+const mapReportStatusLabel = (status) => {
+  switch (status) {
+    case "PRESENT":
+      return "Present";
+    case "LATE":
+      return "Late";
+    case "HALF_DAY":
+      return "Half Day";
+    case "EARLY_LEAVE":
+      return "Early Leave";
+    case "ABSENT":
+      return "Absent";
+    case "LEAVE":
+      return "Leave";
+    case "WEEK_OFF":
+      return "Week Off";
+    default:
+      return status || "Present";
+  }
+};
+
+const resolveReportRecordStatus = (record) => {
+  if (
+    record.status === "ABSENT" &&
+    isIstWeekendDateKey(record.date) &&
+    !record.clockIn &&
+    !record.clockOut
+  ) {
+    return {
+      status: "WEEK_OFF",
+      statusLabel: "Week Off",
+    };
+  }
+
+  return {
+    status: record.status,
+    statusLabel: mapReportStatusLabel(record.status),
+  };
+};
+
+const formatReportProductionHours = (minutes = 0) => {
+  const safeMinutes = Math.max(Math.round(Number(minutes) || 0), 0);
+  const hours = Math.floor(safeMinutes / 60);
+  const mins = safeMinutes % 60;
+
+  if (hours === 0 && mins === 0) {
+    return "--";
+  }
+
+  if (hours === 0) {
+    return `${mins} min${mins === 1 ? "" : "s"}`;
+  }
+
+  if (mins === 0) {
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+
+  return `${hours} hour${hours === 1 ? "" : "s"} ${mins} min${mins === 1 ? "" : "s"}`;
+};
+
+const getYesterdayDateKey = (todayKey) => {
+  const date = new Date(`${todayKey}T00:00:00+05:30`);
+  date.setDate(date.getDate() - 1);
+  return getDateKeyFromDate(date);
+};
+
+const getReportTableEndDate = (toDate, todayKey) => {
+  const yesterdayKey = getYesterdayDateKey(todayKey);
+
+  if (toDate > yesterdayKey) {
+    return yesterdayKey;
+  }
+
+  return toDate;
+};
+
+const buildMonthlySummary = async (month, year, todayKey) => {
+  const { monthStart, monthEnd } = getMonthDateBounds(month, year);
+  const effectiveEnd = monthEnd > todayKey ? todayKey : monthEnd;
+  const totalWorkingDays = countWeekdaysInRange(monthStart, effectiveEnd);
+
+  const [leaveTaken, halfDays, holidays] = await Promise.all([
+    Attendance.countDocuments({
+      date: { $gte: monthStart, $lte: effectiveEnd },
+      status: "LEAVE",
+    }),
+    Attendance.countDocuments({
+      date: { $gte: monthStart, $lte: effectiveEnd },
+      status: "HALF_DAY",
+    }),
+    countHolidayDaysInRange(monthStart, effectiveEnd),
+  ]);
+
+  return {
+    totalWorkingDays,
+    totalLeaveTaken: leaveTaken,
+    totalHolidays: holidays,
+    totalHalfDays: halfDays,
+  };
+};
+
+const buildYearlyAttendanceChart = async (chartYear, todayKey) => {
+  const presentData = [];
+  const absentData = [];
+
+  for (let month = 1; month <= 12; month += 1) {
+    const { monthStart, monthEnd } = getMonthDateBounds(month, chartYear);
+    const effectiveEnd = monthEnd > todayKey ? todayKey : monthEnd;
+
+    if (monthStart > todayKey) {
+      presentData.push(0);
+      absentData.push(0);
+      continue;
+    }
+
+    const [presentCount, absentCount] = await Promise.all([
+      Attendance.countDocuments({
+        date: { $gte: monthStart, $lte: effectiveEnd },
+        status: { $in: PRESENT_ATTENDANCE_STATUSES },
+      }),
+      Attendance.countDocuments({
+        date: { $gte: monthStart, $lte: effectiveEnd },
+        status: "ABSENT",
+      }),
+    ]);
+
+    presentData.push(presentCount);
+    absentData.push(absentCount);
+  }
+
+  return {
+    year: chartYear,
+    categories: CHART_MONTH_LABELS,
+    present: presentData,
+    absent: absentData,
+  };
+};
+
+const getAttendanceReport = async ({
+  month,
+  year,
+  chartYear,
+  fromDate,
+  toDate,
+  status = "",
+  page = 1,
+  limit = 50,
+}) => {
+  if (!month || !year || month < 1 || month > 12) {
+    throw new Error("Valid month and year are required");
+  }
+
+  const todayKey = getTodayDateKey();
+  const { monthStart, monthEnd } = getMonthDateBounds(month, year);
+  const normalizedFromDate =
+    fromDate && DATE_KEY_REGEX.test(fromDate) ? fromDate : monthStart;
+  const normalizedToDate =
+    toDate && DATE_KEY_REGEX.test(toDate)
+      ? toDate > todayKey
+        ? todayKey
+        : toDate
+      : monthEnd > todayKey
+        ? todayKey
+        : monthEnd;
+
+  const tableToDate = getReportTableEndDate(normalizedToDate, todayKey);
+
+  if (normalizedFromDate > normalizedToDate) {
+    throw new Error("Invalid date range");
+  }
+
+  const resolvedChartYear = chartYear || year;
+
+  const currentSummary = await buildMonthlySummary(month, year, todayKey);
+
+  const previousMonthDate = new Date(year, month - 2, 1);
+  const previousMonth = previousMonthDate.getMonth() + 1;
+  const previousYear = previousMonthDate.getFullYear();
+  const previousSummary = await buildMonthlySummary(
+    previousMonth,
+    previousYear,
+    todayKey
+  );
+
+  const summary = {
+    ...currentSummary,
+    changes: {
+      totalWorkingDays: calcPercentChange(
+        currentSummary.totalWorkingDays,
+        previousSummary.totalWorkingDays
+      ),
+      totalLeaveTaken: calcPercentChange(
+        currentSummary.totalLeaveTaken,
+        previousSummary.totalLeaveTaken
+      ),
+      totalHolidays: calcPercentChange(
+        currentSummary.totalHolidays,
+        previousSummary.totalHolidays
+      ),
+      totalHalfDays: calcPercentChange(
+        currentSummary.totalHalfDays,
+        previousSummary.totalHalfDays
+      ),
+    },
+  };
+
+  const chart = await buildYearlyAttendanceChart(resolvedChartYear, todayKey);
+
+  if (normalizedFromDate <= tableToDate) {
+    await syncAttendanceRangeFromBiometric(normalizedFromDate, tableToDate);
+  }
+
+  const tableWeekdayDateKeys = getDateKeysBetween(
+    normalizedFromDate,
+    tableToDate
+  ).filter((dateKey) => !isIstWeekendDateKey(dateKey));
+
+  const attendanceFilter = {
+    date: {
+      $in: tableWeekdayDateKeys,
+    },
+  };
+
+  const normalizedStatus = String(status || "").trim().toUpperCase();
+  if (normalizedStatus === "PRESENT") {
+    attendanceFilter.status = { $in: PRESENT_ATTENDANCE_STATUSES };
+  } else if (normalizedStatus === "ABSENT") {
+    attendanceFilter.status = "ABSENT";
+  } else if (normalizedStatus) {
+    attendanceFilter.status = normalizedStatus;
+  }
+
+  const safePage = Math.max(Number(page) || 1, 1);
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 500);
+  const skip = (safePage - 1) * safeLimit;
+
+  let totalRecords = 0;
+  let records = [];
+
+  if (normalizedFromDate <= tableToDate && tableWeekdayDateKeys.length) {
+    [totalRecords, records] = await Promise.all([
+      Attendance.countDocuments(attendanceFilter),
+      Attendance.find(attendanceFilter)
+        .populate({
+          path: "employee",
+          select: "employeeId name designation department profilePhoto role",
+        })
+        .sort({ date: -1, updatedAt: -1 })
+        .skip(skip)
+        .limit(safeLimit)
+        .lean(),
+    ]);
+  }
+
+  const formattedRecords = records.map((record) => {
+    const employee = record.employee || {};
+    const lateMinutes = Math.max(record.lateMinutes || 0, 0);
+    const overtimeMinutes = Math.max(record.overtimeMinutes || 0, 0);
+    const breakMinutes = Math.max(record.totalBreakMinutes || 0, 0);
+    const resolvedStatus = resolveReportRecordStatus(record);
+
+    return {
+      _id: record._id,
+      employee: formatEmployeeSummary(employee),
+      date: record.date,
+      checkIn: record.clockIn || null,
+      checkOut: record.clockOut || null,
+      status: resolvedStatus.status,
+      statusLabel: resolvedStatus.statusLabel,
+      breakMinutes,
+      lateMinutes,
+      overtimeMinutes,
+      workingMinutes: Math.max(record.workingMinutes || 0, 0),
+      productionHours: formatReportProductionHours(record.workingMinutes || 0),
+    };
+  });
+
+  return {
+    success: true,
+    data: {
+      month,
+      year,
+      monthLabel: MONTH_LABELS[month - 1],
+      fromDate: normalizedFromDate,
+      toDate: tableToDate,
+      summary,
+      chart,
+      records: {
+        total: totalRecords,
+        page: safePage,
+        pages: Math.max(Math.ceil(totalRecords / safeLimit), 1),
+        limit: safeLimit,
+        data: formattedRecords,
+      },
+    },
+  };
+};
+
 module.exports = {
   ensureDailyAttendanceRecords,
   clockIn,
@@ -3073,6 +3517,7 @@ module.exports = {
   getMyAttendanceDashboard,
   getEmployeeAttendance,
   getMonthlyTeamSheet,
+  getAttendanceReport,
   reconcileEmployeeAttendanceFromBiometricRange,
   reconcileRecentAttendanceFromBiometricInOut,
   manualUpdateAttendance,

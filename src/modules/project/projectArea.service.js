@@ -1,6 +1,4 @@
-const path = require("path");
-const fs = require("fs");
-const fsPromises = require("fs/promises");
+const storageService = require("../../services/storage.service");
 const ProjectArea = require("./projectArea.model");
 const Project = require("./project.model");
 const Task = require("./task/task.model");
@@ -35,9 +33,9 @@ const buildSelfScopedAreaFilter = async (projectId, user) => {
   };
 };
 
-const buildAreaDocumentMeta = (file) => ({
+const buildAreaDocumentMeta = async (file) => ({
   fileName: file.originalname,
-  fileUrl: `/api/uploads/areas/${file.filename}`,
+  fileUrl: await storageService.persistUploadedFile(file, "areas"),
   fileSize: file.size,
   mimeType: file.mimetype,
 });
@@ -50,7 +48,7 @@ const saveAreaDocuments = async (projectId, areaId, user, files = []) => {
       areaId,
       projectId,
       title: file.originalname,
-      ...buildAreaDocumentMeta(file),
+      ...(await buildAreaDocumentMeta(file)),
       uploadedBy: user.id,
       uploadedByNameSnapshot: user.name,
     });
@@ -226,7 +224,8 @@ const updateArea = async (projectId, areaId, user, payload) => {
 
   const isPM = PM_ROLES.includes(user.role);
   const isAreaTL = String(area.teamLead) === String(user.id);
-  if (!isPM && !isAreaTL) throw createAppError("Access denied.", 403);
+  const isProjectLead = String(area.projectLead) === String(user.id);
+  if (!isPM && !isAreaTL && !isProjectLead) throw createAppError("Access denied.", 403);
 
   const oldValue = area.toObject();
 
@@ -334,7 +333,8 @@ const deleteArea = async (projectId, areaId, user) => {
 
   const isPM = PM_ROLES.includes(user.role);
   const isAreaTL = String(area.teamLead) === String(user.id);
-  if (!isPM && !isAreaTL) throw createAppError("Access denied.", 403);
+  const isProjectLead = String(area.projectLead) === String(user.id);
+  if (!isPM && !isAreaTL && !isProjectLead) throw createAppError("Access denied.", 403);
 
   area.isArchived = true;
   area.archivedAt = new Date();
@@ -425,11 +425,7 @@ const deleteAreaDocument = async (projectId, areaId, docId, user) => {
 
   await AreaDocument.deleteOne({ _id: docId });
 
-  const fileName = path.basename(document.fileUrl || "");
-  if (fileName) {
-    const fullPath = path.join(__dirname, "../../uploads/areas", fileName);
-    await fsPromises.unlink(fullPath).catch(() => undefined);
-  }
+  await storageService.deleteStoredFile(document.fileUrl);
 
   return document;
 };

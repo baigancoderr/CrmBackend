@@ -6,6 +6,7 @@ const authMiddleware = require("../../middleware/auth.middleware");
 const roleMiddleware = require("../../middleware/role.middleware");
 const ticketUpload = require("../../middleware/ticketUpload.middleware");
 const ticketController = require("./ticket.controller");
+const { UPLOAD_MAX_FILES } = require("../../constants/uploadLimits");
 
 // ── Role sets ─────────────────────────────────────────────────────────────────
 const ALL_ROLES      = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL", "ACCOUNTANT", "EMPLOYEE"];
@@ -39,7 +40,7 @@ router.post(
   "/",
   authMiddleware,
   roleMiddleware(...ALL_ROLES),
-  ticketUpload.array("attachments", 5),
+  ticketUpload.array("attachments", UPLOAD_MAX_FILES.TICKET),
   ticketController.createTicket
 );
 
@@ -127,7 +128,7 @@ router.post(
   "/:id/comments",
   authMiddleware,
   roleMiddleware(...ALL_ROLES),
-  ticketUpload.array("attachments", 3),
+  ticketUpload.array("attachments", UPLOAD_MAX_FILES.TICKET_COMMENT),
   ticketController.addComment
 );
 

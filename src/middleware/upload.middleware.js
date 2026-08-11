@@ -1,6 +1,7 @@
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const { UPLOAD_LIMITS } = require("../constants/uploadLimits");
 
 const uploadDir = path.join(
     __dirname,
@@ -54,6 +55,6 @@ module.exports = multer({
     storage,
     fileFilter,
     limits: {
-        fileSize: 2 * 1024 * 1024,
+        fileSize: UPLOAD_LIMITS.PROFILE_PHOTO_MAX_BYTES,
     },
 });

@@ -1,7 +1,6 @@
 const bcrypt = require("bcryptjs");
 const User = require("./user.model");
-const fs = require("fs");
-const path = require("path");
+const storageService = require("../../services/storage.service");
 const {
     normalizeBiometricEmpCode,
 } = require("../../utils/biometricEmpCode");
@@ -279,28 +278,12 @@ const updateProfile = async (userId,body) => {
     }
 
   if (profilePhoto !== undefined) {
-
-    if (
-        user.profilePhoto &&
-        fs.existsSync(
-            path.join(
-                __dirname,
-                "../../",
-                user.profilePhoto
-            )
-        )
-    ) {
-        fs.unlinkSync(
-            path.join(
-                __dirname,
-                "../../",
-                user.profilePhoto
-            )
-        );
+    if (user.profilePhoto) {
+      await storageService.deleteStoredFile(user.profilePhoto);
     }
 
     user.profilePhoto = profilePhoto;
-}
+  }
 
     if (
         addressInfo !== undefined
@@ -332,15 +315,8 @@ const updateProfilePhoto = async (userId, profilePhoto) => {
         throw new Error("User not found");
     }
 
-    if (
-        user.profilePhoto &&
-        fs.existsSync(
-            path.join(__dirname, "../../", user.profilePhoto)
-        )
-    ) {
-        fs.unlinkSync(
-            path.join(__dirname, "../../", user.profilePhoto)
-        );
+    if (user.profilePhoto) {
+        await storageService.deleteStoredFile(user.profilePhoto);
     }
 
     user.profilePhoto = profilePhoto;
@@ -851,6 +827,143 @@ const getDashboardCounts = async () => {
     };
 };
 
+const getDashboardEmployeeInsights = async () => {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(
+        now.getFullYear(),
+        now.getMonth() + 1,
+        0,
+        23,
+        59,
+        59,
+        999
+    );
+
+    const [
+        departmentAgg,
+        employmentAgg,
+        newJoinersThisMonth,
+        employees,
+        topPerformer,
+    ] = await Promise.all([
+        User.aggregate([
+            { $match: { isActive: true } },
+            {
+                $addFields: {
+                    departmentLabel: {
+                        $let: {
+                            vars: {
+                                trimmed: {
+                                    $trim: {
+                                        input: { $ifNull: ["$department", ""] },
+                                    },
+                                },
+                            },
+                            in: {
+                                $cond: [
+                                    { $eq: ["$$trimmed", ""] },
+                                    "Unassigned",
+                                    "$$trimmed",
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+            {
+                $group: {
+                    _id: "$departmentLabel",
+                    count: { $sum: 1 },
+                },
+            },
+            { $sort: { count: -1 } },
+        ]),
+        User.aggregate([
+            { $match: { isActive: true } },
+            {
+                $group: {
+                    _id: {
+                        $toUpper: {
+                            $ifNull: ["$employmentType", "FULL_TIME"],
+                        },
+                    },
+                    count: { $sum: 1 },
+                },
+            },
+        ]),
+        User.countDocuments({
+            isActive: true,
+            joiningDate: {
+                $gte: monthStart,
+                $lte: monthEnd,
+            },
+        }),
+        User.find({ isActive: true })
+            .select("name department designation role profilePhoto")
+            .sort({ name: 1 })
+            .limit(5)
+            .lean(),
+        User.findOne({ isActive: true })
+            .select("name department designation role profilePhoto")
+            .sort({ name: 1 })
+            .lean(),
+    ]);
+
+    const employmentBreakdown = {
+        fullTime: 0,
+        partTime: 0,
+        contract: 0,
+        intern: 0,
+        other: 0,
+    };
+
+    employmentAgg.forEach((entry) => {
+        switch (entry._id) {
+            case "FULL_TIME":
+                employmentBreakdown.fullTime = entry.count;
+                break;
+            case "PART_TIME":
+                employmentBreakdown.partTime = entry.count;
+                break;
+            case "CONTRACT":
+            case "FREELANCER":
+                employmentBreakdown.contract += entry.count;
+                break;
+            case "INTERN":
+                employmentBreakdown.intern = entry.count;
+                break;
+            default:
+                employmentBreakdown.other += entry.count;
+        }
+    });
+
+    return {
+        newJoinersThisMonth,
+        departmentLabels: departmentAgg.map((entry) => entry._id),
+        departmentCounts: departmentAgg.map((entry) => entry.count),
+        employmentBreakdown,
+        employees: employees.map((employee) => ({
+            _id: String(employee._id),
+            name: employee.name,
+            department: employee.department,
+            designation: employee.designation,
+            role: employee.role,
+            profilePhoto: employee.profilePhoto,
+        })),
+        topPerformer: topPerformer
+            ? {
+                  _id: String(topPerformer._id),
+                  name: topPerformer.name,
+                  department: topPerformer.department,
+                  designation: topPerformer.designation,
+                  role: topPerformer.role,
+                  profilePhoto: topPerformer.profilePhoto,
+              }
+            : null,
+    };
+};
+
 module.exports = {
     createUser,
     getProfile,
@@ -865,4 +978,5 @@ module.exports = {
     deleteUserById,
     updateBiometricEmpCode,
     getDashboardCounts,
+    getDashboardEmployeeInsights,
 };

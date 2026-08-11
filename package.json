@@ -8,13 +8,16 @@
     "start": "node server.js",
     "seed-admin": "node scripts/seedAdmin.js",
     "backfill-biometric-codes": "node scripts/backfillBiometricCodes.js",
-    "sync-employee-id-counter": "node scripts/syncEmployeeIdCounter.js"
+    "sync-employee-id-counter": "node scripts/syncEmployeeIdCounter.js",
+    "test:b2": "node scripts/testBackblazeConnection.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1106.0",
+    "@aws-sdk/s3-request-presigner": "^3.1106.0",
     "@socket.io/redis-adapter": "^8.3.0",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",

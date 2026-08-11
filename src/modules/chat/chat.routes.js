@@ -12,6 +12,7 @@ const {
 } = require("../../middleware/chatRateLimit.middleware");
 const chatFileSecurity = require("../../middleware/chatFileSecurity.middleware");
 const observeChatHttp = require("../../middleware/chatObservability.middleware");
+const { attachmentTooLargeMessage } = require("../../constants/uploadLimits");
 const {
   paginationQuerySchema,
   createConversationSchema,
@@ -131,7 +132,7 @@ router.post(
       if (err.code === "LIMIT_FILE_SIZE") {
         return res.status(400).json({
           success: false,
-          message: "Photo is too large. Max size allowed is 10MB.",
+          message: attachmentTooLargeMessage(),
         });
       }
 
@@ -236,7 +237,7 @@ router.post(
       if (err.code === "LIMIT_FILE_SIZE") {
         return res.status(400).json({
           success: false,
-          message: "File is too large. Max size allowed is 10MB.",
+          message: attachmentTooLargeMessage(),
         });
       }
 

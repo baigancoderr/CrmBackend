@@ -1,24 +1,35 @@
 const ProjectDocument = require("./projectDocument.model");
 const TaskAttachment = require("./task/taskAttachment.model");
 const projectService = require("./project.service");
+const storageService = require("../../services/storage.service");
 const { createAppError, parsePagination, buildPaginatedResult, logProjectActivity } = require("./project.helper");
-const { PM_ROLES } = require("./project.constants");
+const { TL_ROLES } = require("./project.constants");
 
-const saveUploadedFile = (file) => ({
+const assertCanManageProjectDocuments = (user) => {
+  if (!TL_ROLES.includes(user.role)) {
+    throw createAppError(
+      "Only Super Admin, HR, Project Manager, or Team Lead can manage project documents.",
+      403
+    );
+  }
+};
+
+const saveUploadedFile = async (file) => ({
   fileName: file.originalname,
-  fileUrl: `/uploads/projects/${file.filename}`,
+  fileUrl: await storageService.persistUploadedFile(file, "projects"),
   fileSize: file.size,
   mimeType: file.mimetype,
 });
 
 const uploadProjectDocument = async (projectId, user, payload, files = []) => {
-  await projectService.assertProjectAccess(projectId, user, { write: true });
+  await projectService.assertProjectAccess(projectId, user);
+  assertCanManageProjectDocuments(user);
 
   if (!files.length) throw createAppError("At least one file is required.", 422);
 
   const docs = [];
   for (const file of files) {
-    const fileMeta = saveUploadedFile(file);
+    const fileMeta = await saveUploadedFile(file);
     const doc = await ProjectDocument.create({
       projectId,
       title: payload.title || file.originalname,
@@ -57,13 +68,51 @@ const listProjectDocuments = async (projectId, user, query = {}) => {
   return buildPaginatedResult(records, totalRecords, page, limit);
 };
 
+const updateProjectDocument = async (projectId, docId, user, payload = {}) => {
+  await projectService.assertProjectAccess(projectId, user);
+  assertCanManageProjectDocuments(user);
+
+  const document = await ProjectDocument.findOne({ _id: docId, projectId });
+  if (!document) throw createAppError("Document not found.", 404);
+
+  if (payload.title !== undefined) {
+    const title = String(payload.title || "").trim();
+    if (!title) throw createAppError("Document title is required.", 422);
+    document.title = title;
+  }
+
+  if (payload.description !== undefined) {
+    document.description = String(payload.description || "").trim();
+  }
+
+  if (payload.isClientVisible !== undefined) {
+    document.isClientVisible = payload.isClientVisible === true;
+  }
+
+  await document.save();
+  return document.toObject();
+};
+
+const deleteProjectDocument = async (projectId, docId, user) => {
+  await projectService.assertProjectAccess(projectId, user);
+  assertCanManageProjectDocuments(user);
+
+  const document = await ProjectDocument.findOne({ _id: docId, projectId });
+  if (!document) throw createAppError("Document not found.", 404);
+
+  await ProjectDocument.deleteOne({ _id: docId });
+  await storageService.deleteStoredFile(document.fileUrl);
+
+  return document.toObject();
+};
+
 const uploadTaskAttachment = async (projectId, taskId, user, files = []) => {
   await projectService.assertProjectAccess(projectId, user, { write: true });
   if (!files.length) throw createAppError("At least one file is required.", 422);
 
   const attachments = [];
   for (const file of files) {
-    const fileMeta = saveUploadedFile(file);
+    const fileMeta = await saveUploadedFile(file);
     const attachment = await TaskAttachment.create({
       taskId,
       projectId,
@@ -85,6 +134,8 @@ const listTaskAttachments = async (projectId, taskId, user) => {
 module.exports = {
   uploadProjectDocument,
   listProjectDocuments,
+  updateProjectDocument,
+  deleteProjectDocument,
   uploadTaskAttachment,
   listTaskAttachments,
 };

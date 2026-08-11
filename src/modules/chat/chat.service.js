@@ -9,6 +9,7 @@ const {
   incrementMetric,
 } = require("../../utils/observability");
 const chatNotificationService = require("./chatNotification.service");
+const storageService = require("../../services/storage.service");
 
 // Group create/manage allowed only for these system roles.
 const GROUP_MANAGER_ROLES = [
@@ -101,6 +102,85 @@ const normalizeUserIds = (userIds = []) => {
   ];
 
   return uniqueIds;
+};
+
+/** Active Super Admins must be members of every GROUP conversation. */
+const getActiveSuperAdminUserIds = async () => {
+  const users = await User.find({
+    role: "SUPER_ADMIN",
+    isActive: true,
+  })
+    .select("_id")
+    .lean();
+
+  return users.map((user) => user._id);
+};
+
+const ensureSuperAdminsInConversation = async (conversation) => {
+  if (
+    !conversation ||
+    conversation.type !== "GROUP" ||
+    conversation.isDeleted
+  ) {
+    return conversation;
+  }
+
+  const superAdminIds = await getActiveSuperAdminUserIds();
+
+  if (!superAdminIds.length) {
+    return conversation;
+  }
+
+  const resolveMemberUserId = (member) => {
+    if (member.user && member.user._id) {
+      return member.user._id.toString();
+    }
+
+    return member.user?.toString();
+  };
+
+  let changed = false;
+  const activeMemberIds = new Set(
+    conversation.members
+      .filter((member) => !member.leftAt)
+      .map((member) => resolveMemberUserId(member))
+      .filter(Boolean)
+  );
+
+  for (const adminId of superAdminIds) {
+    const adminIdStr = adminId.toString();
+
+    if (activeMemberIds.has(adminIdStr)) {
+      continue;
+    }
+
+    const existingMember = conversation.members.find(
+      (member) => resolveMemberUserId(member) === adminIdStr
+    );
+
+    if (existingMember) {
+      existingMember.leftAt = null;
+      existingMember.joinedAt = new Date();
+      existingMember.unreadCount = 0;
+    } else {
+      conversation.members.push({
+        user: adminId,
+        role: "MEMBER",
+        joinedAt: new Date(),
+        lastReadAt: null,
+        unreadCount: 0,
+      });
+    }
+
+    activeMemberIds.add(adminIdStr);
+    changed = true;
+  }
+
+  if (changed) {
+    await conversation.save();
+  }
+
+  return conversation;
 };
 
 const validateActiveUsers = async (userIds) => {
@@ -514,7 +594,7 @@ const createConversation = async (payload, user) => {
     throw new Error("Group name is required");
   }
 
-  const normalizedMemberIds = normalizeUserIds(memberIds);
+  let normalizedMemberIds = normalizeUserIds(memberIds);
 
   if (type === "DM") {
     if (normalizedMemberIds.length !== 1) {
@@ -542,7 +622,19 @@ const createConversation = async (payload, user) => {
     }
   }
 
-  if (type === "GROUP" && normalizedMemberIds.length < 1) {
+  if (type === "GROUP") {
+    const superAdminIds = await getActiveSuperAdminUserIds();
+    normalizedMemberIds = normalizeUserIds([
+      ...normalizedMemberIds,
+      ...superAdminIds,
+    ]);
+  }
+
+  const otherMemberIds = normalizedMemberIds.filter(
+    (memberId) => memberId.toString() !== user.id.toString()
+  );
+
+  if (type === "GROUP" && otherMemberIds.length < 1) {
     throw new Error("Add at least one member to the group");
   }
 
@@ -659,9 +751,7 @@ const getConversationById = async (
   userId,
   userRole = ""
 ) => {
-  const conversation = await populateConversation(
-    Conversation.findById(conversationId)
-  );
+  let conversation = await Conversation.findById(conversationId);
 
   if (!conversation) {
     throw new Error("Conversation not found");
@@ -679,6 +769,14 @@ const getConversationById = async (
   ) {
     assertActiveMember(conversation, userId);
   }
+
+  if (conversation.type === "GROUP") {
+    await ensureSuperAdminsInConversation(conversation);
+  }
+
+  conversation = await populateConversation(
+    Conversation.findById(conversationId)
+  );
 
   return formatConversation(
     conversation.toObject(),
@@ -815,8 +913,14 @@ const leaveConversation = async (
 
   const member = assertActiveMember(conversation, userId);
   const user = await User.findById(userId)
-    .select("name")
+    .select("name role")
     .lean();
+
+  if (user?.role === "SUPER_ADMIN") {
+    throw new Error(
+      "Super Admin cannot leave group conversations"
+    );
+  }
 
   member.leftAt = new Date();
   member.unreadCount = 0;
@@ -869,9 +973,7 @@ const getConversationMembers = async (
   userId,
   userRole = ""
 ) => {
-  const conversation = await populateConversation(
-    Conversation.findById(conversationId)
-  );
+  let conversation = await Conversation.findById(conversationId);
 
   if (!conversation) {
     throw new Error("Conversation not found");
@@ -887,6 +989,14 @@ const getConversationMembers = async (
   } else if (conversation.type !== "GROUP") {
     assertActiveMember(conversation, userId);
   }
+
+  if (conversation.type === "GROUP") {
+    await ensureSuperAdminsInConversation(conversation);
+  }
+
+  conversation = await populateConversation(
+    Conversation.findById(conversationId)
+  );
 
   return conversation.members
     .filter((member) => !member.leftAt)
@@ -1038,8 +1148,14 @@ const removeMember = async (
   }
 
   const removedUser = await User.findById(targetUserId)
-    .select("name")
+    .select("name role")
     .lean();
+
+  if (removedUser?.role === "SUPER_ADMIN") {
+    throw new Error(
+      "Super Admin cannot be removed from group conversations"
+    );
+  }
 
   member.leftAt = new Date();
   member.unreadCount = 0;
@@ -1272,10 +1388,11 @@ const sendFileMessage = async (
   replyTo = null
 ) => {
   const isImage = file.mimetype.startsWith("image/");
-  // Prefer /api/uploads so nginx setups that only proxy /api can serve files.
-  const filePath = isPrivateStorageEnabled
-    ? `/api/chat/files/${file.filename}`
-    : `/api/uploads/chat/${file.filename}`;
+  const filePath = storageService.isBackblazeStorage()
+    ? await storageService.persistUploadedFile(file, "chat")
+    : isPrivateStorageEnabled
+      ? `/api/chat/files/${file.filename}`
+      : `/api/uploads/chat/${file.filename}`;
 
   return sendMessage(
     conversationId,
@@ -1983,30 +2100,15 @@ const updateGroupPhoto = async (conversationId, file, user, io) => {
 
   assertGroupManager(conversation, user.id, user.role);
 
-  // Delete old photo file if it was a locally stored file
   if (conversation.photo) {
-    const oldRelative = conversation.photo.startsWith("/")
-      ? conversation.photo
-      : `/${conversation.photo}`;
-
-    // Strip /api prefix if present so we get a real filesystem path
-    const normalizedPath = oldRelative.replace(/^\/api/, "");
-
-    const oldAbsolute = path.join(
-      __dirname,
-      "../../..",
-      normalizedPath
-    );
-
-    fs.unlink(oldAbsolute).catch(() => {
-      // Ignore — old file may not exist locally (e.g. migrated storage)
-    });
+    await storageService.deleteStoredFile(conversation.photo);
   }
 
-  // Build the public URL path for the uploaded file
-  const relativePath = isPrivateStorageEnabled
-    ? `/uploads-private/chat/${file.filename}`
-    : `/uploads/chat/${file.filename}`;
+  const relativePath = storageService.isBackblazeStorage()
+    ? await storageService.persistUploadedFile(file, "chat")
+    : isPrivateStorageEnabled
+      ? `/uploads-private/chat/${file.filename}`
+      : `/uploads/chat/${file.filename}`;
 
   conversation.photo = relativePath;
   await conversation.save();
@@ -2067,12 +2169,15 @@ const getProjectMemberUserIds = async (project) => {
       .lean(),
   ]);
 
+  const superAdminIds = await getActiveSuperAdminUserIds();
+
   const ids = normalizeUserIds([
     project.projectManager,
     ...(Array.isArray(project.teamMembers) ? project.teamMembers : []),
     ...memberships.map((m) => m.userId),
     ...areas.flatMap((area) => [area.teamLead, area.projectLead]),
     ...tasks.map((task) => task.assignedTo),
+    ...superAdminIds,
   ]);
 
   if (!ids.length) return [];
@@ -2089,11 +2194,14 @@ const getProjectMemberUserIds = async (project) => {
 
 const syncProjectChatMembers = async (conversation, projectMemberIds) => {
   const desired = new Set(projectMemberIds.map((id) => id.toString()));
+  const superAdminIds = new Set(
+    (await getActiveSuperAdminUserIds()).map((id) => id.toString())
+  );
   let changed = false;
 
   for (const member of conversation.members) {
     const memberId = member.user.toString();
-    if (desired.has(memberId)) {
+    if (desired.has(memberId) || superAdminIds.has(memberId)) {
       if (member.leftAt) {
         member.leftAt = null;
         member.joinedAt = new Date();

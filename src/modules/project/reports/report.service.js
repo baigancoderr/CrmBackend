@@ -510,9 +510,16 @@ const getMyOverallReport = async (user, query = {}) => {
 };
 
 const getTeamLeadReport = async (user, query = {}) => {
-  if (!isTeamLeadRole(user.role)) throw createAppError("Access denied.", 403);
+  const areas = await ProjectArea.find({
+    $or: [{ teamLead: user.id }, { projectLead: user.id }],
+  })
+    .select("_id projectId title")
+    .lean();
 
-  const areas = await ProjectArea.find({ teamLead: user.id }).select("_id projectId title").lean();
+  if (!areas.length && !isTeamLeadRole(user.role)) {
+    throw createAppError("Access denied.", 403);
+  }
+
   const areaIds = areas.map((a) => a._id);
 
   const now = new Date();

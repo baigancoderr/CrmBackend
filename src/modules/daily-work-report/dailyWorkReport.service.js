@@ -1,13 +1,14 @@
 const DailyWorkReport = require("./dailyWorkReport.model");
 const User = require("../user/user.model");
 const notificationService = require("../notifications/notification.service");
+const { UPLOAD_LIMITS, dailyWorkReportAttachmentTooLargeMessage } = require("../../constants/uploadLimits");
 
 const REVIEWER_ROLES = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL"];
 const REPORTING_MANAGER_ROLES = ["PROJECT_MANAGER", "TL", "HR"];
 const WORK_STATUS_OPTIONS = ["COMPLETED", "IN_PROGRESS", "BLOCKED", "ON_HOLD"];
 const REVIEW_STATUS_OPTIONS = ["PENDING", "REVIEWED"];
 const MAX_EDIT_WINDOW_DAYS = 2;
-const MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024;
+const MAX_ATTACHMENT_SIZE_BYTES = UPLOAD_LIMITS.DAILY_WORK_REPORT_ATTACHMENT_MAX_BYTES;
 const ALLOWED_ATTACHMENT_MIME_TYPES = [
   "image/jpeg",
   "image/jpg",
@@ -142,7 +143,7 @@ const validateAttachment = (attachment) => {
   }
 
   if (fileSize > MAX_ATTACHMENT_SIZE_BYTES) {
-    throw createAppError("Attachment size should be less than 5MB.", 422);
+    throw createAppError(dailyWorkReportAttachmentTooLargeMessage(), 422);
   }
 
   if (!dataUrl.startsWith("data:")) {
@@ -401,24 +402,16 @@ const getMyDailyWorkReports = async (userId, query) => {
   };
 };
 
-const getAllDailyWorkReports = async (query, reviewer = null) => {
+const buildDailyWorkReportFilter = (query, reviewer = null) => {
   const {
-    page = 1,
-    limit = 10,
     search = "",
     workStatus,
     reviewStatus,
     employeeId,
   } = query;
 
-  const currentPage = Math.max(Number(page) || 1, 1);
-  const perPage = Math.max(Number(limit) || 10, 1);
-  const skip = (currentPage - 1) * perPage;
-
   const filter = {};
 
-  // TL sees only reports where they were chosen as reporting manager.
-  // HR / PROJECT_MANAGER / SUPER_ADMIN can review the full list.
   if (reviewer?.role === "TL") {
     filter.reportingManager = String(reviewer.id || "");
   }
@@ -453,6 +446,60 @@ const getAllDailyWorkReports = async (query, reviewer = null) => {
       { projectName: regex },
     ];
   }
+
+  return filter;
+};
+
+const getDailyWorkReportStats = async (query, reviewer = null) => {
+  const filter = buildDailyWorkReportFilter(query, reviewer);
+  const withBlockersFilter = {
+    ...filter,
+    blockers: { $exists: true, $nin: [null, ""] },
+  };
+
+  const [
+    total,
+    pending,
+    reviewed,
+    completed,
+    inProgress,
+    blocked,
+    onHold,
+    withBlockers,
+  ] = await Promise.all([
+    DailyWorkReport.countDocuments(filter),
+    DailyWorkReport.countDocuments({ ...filter, reviewStatus: "PENDING" }),
+    DailyWorkReport.countDocuments({ ...filter, reviewStatus: "REVIEWED" }),
+    DailyWorkReport.countDocuments({ ...filter, workStatus: "COMPLETED" }),
+    DailyWorkReport.countDocuments({ ...filter, workStatus: "IN_PROGRESS" }),
+    DailyWorkReport.countDocuments({ ...filter, workStatus: "BLOCKED" }),
+    DailyWorkReport.countDocuments({ ...filter, workStatus: "ON_HOLD" }),
+    DailyWorkReport.countDocuments(withBlockersFilter),
+  ]);
+
+  return {
+    total,
+    pending,
+    reviewed,
+    completed,
+    inProgress,
+    blocked,
+    onHold,
+    withBlockers,
+  };
+};
+
+const getAllDailyWorkReports = async (query, reviewer = null) => {
+  const {
+    page = 1,
+    limit = 10,
+  } = query;
+
+  const currentPage = Math.max(Number(page) || 1, 1);
+  const perPage = Math.max(Number(limit) || 10, 1);
+  const skip = (currentPage - 1) * perPage;
+
+  const filter = buildDailyWorkReportFilter(query, reviewer);
 
   const totalRecords = await DailyWorkReport.countDocuments(filter);
   const data = await DailyWorkReport.find(filter)
@@ -517,5 +564,6 @@ module.exports = {
   updateMyDailyWorkReport,
   getMyDailyWorkReports,
   getAllDailyWorkReports,
+  getDailyWorkReportStats,
   reviewDailyWorkReport,
 };

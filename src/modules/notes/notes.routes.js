@@ -6,6 +6,7 @@ const noteShareController = require("./noteShare.controller");
 const auth = require("../../middleware/auth.middleware");
 const notesUpload = require("../../middleware/notesUpload.middleware");
 const validateRequest = require("../../middleware/validate.middleware");
+const { UPLOAD_MAX_FILES } = require("../../constants/uploadLimits");
 const {
   noteIdParamSchema,
   createNoteSchema,
@@ -43,7 +44,7 @@ router.get(
 
 router.post(
   "/",
-  notesUpload.array("attachments", 10), // Support up to 10 files
+  notesUpload.array("attachments", UPLOAD_MAX_FILES.NOTES),
   validateRequest({ body: createNoteSchema }),
   notesController.createNote
 );
@@ -62,7 +63,7 @@ router.get(
 
 router.patch(
   "/:id",
-  notesUpload.array("attachments", 10),
+  notesUpload.array("attachments", UPLOAD_MAX_FILES.NOTES),
   validateRequest({
     params: noteIdParamSchema,
     body: updateNoteSchema,

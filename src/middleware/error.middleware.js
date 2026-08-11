@@ -1,3 +1,5 @@
+const { attachmentTooLargeMessage } = require("../constants/uploadLimits");
+
 const errorMiddleware = (err, req, res, next) => {
   console.error("[Error Middleware]:", err);
 
@@ -31,7 +33,7 @@ const errorMiddleware = (err, req, res, next) => {
   // Handle Multer upload errors
   if (err.code === "LIMIT_FILE_SIZE") {
     statusCode = 400;
-    message = "File is too large. Max size allowed is 10MB.";
+    message = attachmentTooLargeMessage();
     errors = [message];
   }
 

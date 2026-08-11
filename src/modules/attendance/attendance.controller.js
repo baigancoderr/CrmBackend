@@ -252,9 +252,14 @@ const revokeClockOut = async (req, res) => {
 
 const getAttendanceDashboardDetails = async (req, res) => {
   try {
+    const light =
+      req.query.light === "1" ||
+      req.query.light === "true" ||
+      req.query.light === "yes";
     const result =
       await attendanceService.getAttendanceDashboardDetails(
-        req.query.date
+        req.query.date,
+        { light }
       );
 
     return res.status(200).json(result);
@@ -302,6 +307,28 @@ const reconcileEmployeeAttendanceFromBiometricRange = async (req, res) => {
   }
 };
 
+const getAttendanceReport = async (req, res) => {
+  try {
+    const result = await attendanceService.getAttendanceReport({
+      month: Number(req.query.month),
+      year: Number(req.query.year),
+      chartYear: Number(req.query.chartYear),
+      fromDate: req.query.fromDate,
+      toDate: req.query.toDate,
+      status: req.query.status,
+      page: Number(req.query.page),
+      limit: Number(req.query.limit),
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 module.exports = {
   clockIn,
   clockOut,
@@ -313,6 +340,7 @@ module.exports = {
   getMyAttendanceDashboard,
   getEmployeeAttendance,
   getMonthlyTeamSheet,
+  getAttendanceReport,
   reconcileEmployeeAttendanceFromBiometricRange,
   manualUpdateAttendance,
   revokeClockOut,

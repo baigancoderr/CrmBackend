@@ -1,6 +1,7 @@
 const Ticket = require("./ticket.model");
 const TicketActivity = require("./ticketActivity.model");
 const User = require("../user/user.model");
+const storageService = require("../../services/storage.service");
 const { isValidTicketCategory } = require("./ticket.constants");
 
 // ── Role constants ────────────────────────────────────────────────────────────
@@ -67,15 +68,19 @@ const createTicket = async (userId, userRole, userName, employeeId, payload, fil
 
   const ticketNumber = await generateTicketNumber();
 
-  const attachments = files.map((f) => ({
-    fileName: f.originalname,
-    fileUrl: `/uploads/tickets/${f.filename}`,
-    fileSize: f.size,
-    mimeType: f.mimetype,
-    uploadedBy: userId,
-    uploadedBySnapshot: userName,
-    uploadedAt: new Date(),
-  }));
+  const attachments = [];
+
+  for (const file of files) {
+    attachments.push({
+      fileName: file.originalname,
+      fileUrl: await storageService.persistUploadedFile(file, "tickets"),
+      fileSize: file.size,
+      mimeType: file.mimetype,
+      uploadedBy: userId,
+      uploadedBySnapshot: userName,
+      uploadedAt: new Date(),
+    });
+  }
 
   const ticketData = {
     ticketNumber,

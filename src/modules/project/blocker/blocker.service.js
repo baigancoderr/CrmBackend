@@ -4,16 +4,18 @@ const Project = require("../project.model");
 const ProjectArea = require("../projectArea.model");
 const projectService = require("../project.service");
 const taskSessionService = require("../task/taskSession.service");
+const storageService = require("../../../services/storage.service");
 const {
   createAppError,
   parsePagination,
   buildPaginatedResult,
   logProjectActivity,
   logTaskHistory,
+  isAreaLead,
   USER_POPULATE,
 } = require("../project.helper");
 const { notifyBlockerRaised } = require("../notifications/projectNotification.service");
-const { TL_ROLES } = require("../project.constants");
+const { PM_ROLES } = require("../project.constants");
 
 const raiseBlocker = async (projectId, taskId, user, payload, files = []) => {
   await projectService.assertProjectAccess(projectId, user, { write: true });
@@ -36,12 +38,16 @@ const raiseBlocker = async (projectId, taskId, user, payload, files = []) => {
   const reason = String(payload.reason || "").trim();
   if (!reason) throw createAppError("Blocker reason is required.", 422);
 
-  const attachments = files.map((f) => ({
-    fileName: f.originalname,
-    fileUrl: `/uploads/tickets/${f.filename}`,
-    fileSize: f.size,
-    mimeType: f.mimetype,
-  }));
+  const attachments = [];
+
+  for (const file of files) {
+    attachments.push({
+      fileName: file.originalname,
+      fileUrl: await storageService.persistUploadedFile(file, "tickets"),
+      fileSize: file.size,
+      mimeType: file.mimetype,
+    });
+  }
 
   const blocker = await Blocker.create({
     taskId,
@@ -123,9 +129,9 @@ const resolveBlocker = async (projectId, blockerId, user, payload) => {
   if (!blocker) throw createAppError("Blocker not found.", 404);
 
   const area = await ProjectArea.findById(blocker.projectAreaId).select("projectLead teamLead");
-  const canResolve = TL_ROLES.includes(user.role) || String(area?.projectLead) === String(user.id);
+  const canResolve = PM_ROLES.includes(user.role) || isAreaLead(area, user.id);
   if (!canResolve) {
-    throw createAppError("Only Team Lead or managers can resolve blockers.", 403);
+    throw createAppError("Only Team Lead, Project Lead, or managers can resolve blockers.", 403);
   }
 
   if (["RESOLVED", "CLOSED"].includes(blocker.status)) {

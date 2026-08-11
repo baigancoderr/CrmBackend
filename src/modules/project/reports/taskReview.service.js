@@ -77,6 +77,26 @@ const resolveFeedScope = async (user) => {
     };
   }
 
+  // EMPLOYEE (or other roles) assigned as Team/Project Lead on specific areas.
+  const ledAreas = await ProjectArea.find({
+    $or: [{ teamLead: user.id }, { projectLead: user.id }],
+    isArchived: false,
+  })
+    .select("_id projectId")
+    .lean();
+
+  if (ledAreas.length) {
+    return {
+      projectIds: toObjectIds(ledAreas.map((a) => a.projectId)),
+      areaIds: ledAreas.map((a) => a._id),
+    };
+  }
+
+  // Regular employees with no lead assignment: empty scoped feed (UI may still open the tab).
+  if (user.role === "EMPLOYEE") {
+    return { projectIds: [], areaIds: [] };
+  }
+
   throw createAppError(
     "Only Super Admin, HR, Project Managers and Team Leads can view the task review list.",
     403

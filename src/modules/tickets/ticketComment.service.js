@@ -1,5 +1,6 @@
 const Ticket = require("./ticket.model");
 const TicketComment = require("./ticketComment.model");
+const storageService = require("../../services/storage.service");
 const { logActivity } = require("./ticket.service");
 
 const INTERNAL_VISIBLE_ROLES = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL", "ACCOUNTANT"];
@@ -33,12 +34,16 @@ const addComment = async (ticketId, actor, payload, files = []) => {
 
   const mentionedUsers = Array.isArray(payload.mentionedUsers) ? payload.mentionedUsers : [];
 
-  const attachments = files.map((f) => ({
-    fileName: f.originalname,
-    fileUrl: `/uploads/tickets/${f.filename}`,
-    fileSize: f.size,
-    mimeType: f.mimetype,
-  }));
+  const attachments = [];
+
+  for (const file of files) {
+    attachments.push({
+      fileName: file.originalname,
+      fileUrl: await storageService.persistUploadedFile(file, "tickets"),
+      fileSize: file.size,
+      mimeType: file.mimetype,
+    });
+  }
 
   const comment = await TicketComment.create({
     ticket: ticketId,

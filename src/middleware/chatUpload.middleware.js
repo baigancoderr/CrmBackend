@@ -2,10 +2,10 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const {
-  CHAT_MAX_ATTACHMENT_SIZE_BYTES,
   CHAT_UNSUPPORTED_FILE_MESSAGE,
   isChatAttachmentAllowed,
 } = require("../constants/chatAttachments");
+const { UPLOAD_LIMITS } = require("../constants/uploadLimits");
 
 const isPrivateStorageEnabled =
   process.env.CHAT_UPLOAD_PRIVATE_STORAGE === "true";
@@ -53,6 +53,6 @@ module.exports = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: CHAT_MAX_ATTACHMENT_SIZE_BYTES,
+    fileSize: UPLOAD_LIMITS.ATTACHMENT_MAX_BYTES,
   },
 });

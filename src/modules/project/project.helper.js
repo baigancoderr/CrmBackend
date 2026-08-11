@@ -137,6 +137,19 @@ const isManagerRole = (role) => ["SUPER_ADMIN", "HR", "PROJECT_MANAGER"].include
 const isTeamLeadRole = (role) => isManagerRole(role) || role === "TL";
 const isClientRole = (role) => role === "CLIENT";
 
+const leadRefId = (value) => {
+  if (!value) return "";
+  if (typeof value === "object" && value._id) return String(value._id);
+  return String(value);
+};
+
+/** Area Team Lead or Project Lead assignment (not global TL role). */
+const isAreaLead = (area, userId) => {
+  if (!area || !userId) return false;
+  const id = String(userId);
+  return leadRefId(area.teamLead) === id || leadRefId(area.projectLead) === id;
+};
+
 const USER_POPULATE = "name employeeId role email profilePhoto department designation";
 
 module.exports = {
@@ -154,5 +167,7 @@ module.exports = {
   isManagerRole,
   isTeamLeadRole,
   isClientRole,
+  leadRefId,
+  isAreaLead,
   USER_POPULATE,
 };
