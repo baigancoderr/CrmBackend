@@ -453,6 +453,15 @@ const getAnnouncementById = async (id, user) => {
     throw error;
   }
 
+  const now = new Date();
+  const isExpired = announcement.expiresAt && announcement.expiresAt <= now;
+
+  if (announcement.status !== "PUBLISHED" || isExpired) {
+    const error = new Error("Announcement is not available");
+    error.statusCode = 404;
+    throw error;
+  }
+
   const userId = user._id || user.id;
 
   // Auto mark read if user is logged in employee
