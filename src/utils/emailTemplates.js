@@ -150,11 +150,13 @@ const shell = (preheader, accentColor, logoCid, body) => `<!DOCTYPE html>
 const leaveAppliedTemplate = ({
   logoCid, employeeName, employeeId,
   fromDate, toDate, totalLeaveDays,
-  category, leaveDeductionType, reason,
+  category, leaveDeductionType, earlyLeaveHours, reason,
 }) => {
   const subject = `New Leave Request — ${employeeName}`;
   const days    = `${totalLeaveDays} ${totalLeaveDays === 1 ? "day" : "days"}`;
-  const deductionLabel = { LEAVE_BALANCE: "Leave Balance", SALARY: "Salary Deduction", BOTH: "Leave Balance + Salary" }[leaveDeductionType] || leaveDeductionType;
+  const categoryLabel = category === "EARLY_LEAVE" ? "Early Leave" : category === "FULL_DAY" ? "Full Day" : "Half Day";
+  const deductionLabel = { LEAVE_BALANCE: "Leave Balance", SALARY: "Salary Deduction", BOTH: "Leave Balance + Salary", EARLY_LEAVE: "Early Leave (Complete Work Hours)" }[leaveDeductionType] || leaveDeductionType;
+  const earlyLeaveHoursText = Number(earlyLeaveHours || 0) > 0 ? `${Number(earlyLeaveHours).toFixed(Number.isInteger(Number(earlyLeaveHours)) ? 0 : 1)} hours` : "—";
 
   resetRows();
   const body = `
@@ -189,7 +191,8 @@ const leaveAppliedTemplate = ({
       ${row("From Date",      fromDate)}
       ${row("To Date",        toDate)}
       ${row("Leave Days",     `<strong>${days}</strong>`)}
-      ${row("Category",       category === "FULL_DAY" ? "Full Day" : "Half Day")}
+      ${row("Category",       categoryLabel)}
+      ${row("Early Leave Hours", earlyLeaveHoursText)}
       ${row("Deduction Type", deductionLabel)}
       ${row("Reason",         reason)}
       ${row("Status",         pill("● PENDING", "#fff7e6", "#b45309"))}

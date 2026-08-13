@@ -1,6 +1,7 @@
 const Ticket = require("./ticket.model");
 const TicketEscalation = require("./ticketEscalation.model");
 const User = require("../user/user.model");
+const notificationService = require("../notifications/notification.service");
 const { logActivity } = require("./ticket.service");
 
 const createAppError = (message, statusCode = 400) => {
@@ -70,8 +71,34 @@ const escalateTicket = async (ticketId, actor, payload) => {
     { status: "ESCALATED" }
   );
 
-  return Ticket.findById(ticket._id)
-    .populate("assignedTo", "name employeeId role");
+  const populatedTicket = await Ticket.findById(ticket._id)
+    .populate("assignedTo", "name employeeId role")
+    .populate("createdBy", "name employeeId role");
+
+  await notificationService.createNotificationsForRecipients({
+    recipientIds: [
+      String(ticket.createdBy),
+      ticket.assignedTo ? String(ticket.assignedTo) : null,
+      ...(ticket.watchers || []).map(String),
+    ].filter(Boolean),
+    actorId: actor.id,
+    type: "TICKET_ESCALATED",
+    title: "Ticket escalated",
+    message: `Ticket ${ticket.ticketNumber} has been escalated for review.`,
+    status: "INFO",
+    entityType: "TICKET",
+    entityId: ticket._id,
+    link: `/tickets/${ticket._id}`,
+    meta: {
+      ticketId: String(ticket._id),
+      ticketNumber: ticket.ticketNumber,
+      oldStatus,
+      escalatedTo: escalatedTo ? escalatedTo.name : "",
+      reason,
+    },
+  });
+
+  return populatedTicket;
 };
 
 const getEscalationLog = async (ticketId) => {

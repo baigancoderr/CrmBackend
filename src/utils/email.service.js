@@ -163,6 +163,7 @@ const sendLeaveAppliedEmail = async ({ leave, employee, reportingManagerId, team
       totalLeaveDays:     leave.totalLeaveDays,
       category:           leave.category,
       leaveDeductionType: leave.leaveDeductionType,
+      earlyLeaveHours:    leave.earlyLeaveHours || 0,
       reason:             leave.reason,
     });
 

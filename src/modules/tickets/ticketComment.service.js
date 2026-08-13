@@ -1,5 +1,6 @@
 const Ticket = require("./ticket.model");
 const TicketComment = require("./ticketComment.model");
+const notificationService = require("../notifications/notification.service");
 const storageService = require("../../services/storage.service");
 const { logActivity } = require("./ticket.service");
 
@@ -78,9 +79,39 @@ const addComment = async (ticketId, actor, payload, files = []) => {
       `${mentionedUsers.length} user(s) mentioned.`);
   }
 
-  return TicketComment.findById(comment._id)
+  const populatedComment = await TicketComment.findById(comment._id)
     .populate("sender", "name employeeId role")
     .populate("mentionedUsers", "name employeeId");
+
+  const recipients = [
+    String(ticket.createdBy),
+    ticket.assignedTo ? String(ticket.assignedTo) : null,
+    ...ticket.watchers.map(String),
+    ...mentionedUsers.map(String),
+  ].filter(Boolean);
+
+  await notificationService.createNotificationsForRecipients({
+    recipientIds: [...new Set(recipients.filter((id) => String(id) !== String(actor.id)))],
+    actorId: actor.id,
+    type: isInternal ? "TICKET_INTERNAL_COMMENT" : "TICKET_COMMENT",
+    title: isInternal ? "New internal note" : "New ticket comment",
+    message: isInternal
+      ? `Internal note added to ticket ${ticket.ticketNumber}.`
+      : `${actor.name || "A user"} commented on ticket ${ticket.ticketNumber}.`,
+    status: "INFO",
+    entityType: "TICKET",
+    entityId: ticket._id,
+    link: `/tickets/${ticket._id}`,
+    meta: {
+      ticketId: String(ticket._id),
+      ticketNumber: ticket.ticketNumber,
+      commentId: String(populatedComment._id),
+      commentText: message,
+      isInternal,
+    },
+  });
+
+  return populatedComment;
 };
 
 // ── Get comments for a ticket ─────────────────────────────────────────────────

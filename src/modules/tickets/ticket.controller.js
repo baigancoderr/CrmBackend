@@ -244,6 +244,16 @@ const getAdminDashboard = async (req, res) => {
   }
 };
 
+// ── Unread count ──────────────────────────────────────────────────────────────
+const getMyUnreadCount = async (req, res) => {
+  try {
+    const count = await ticketService.getMyUnreadCount(req.user.id);
+    return res.status(200).json({ success: true, data: { count } });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   // Ticket CRUD
   createTicket, getMyTickets, getAssignedTickets, getAllTickets, getTicketById,
@@ -261,4 +271,6 @@ module.exports = {
   escalateTicket, getEscalationLog,
   // Dashboards
   getEmployeeDashboard, getTeamDashboard, getAdminDashboard,
+  // Unread count
+  getMyUnreadCount,
 };

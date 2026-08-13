@@ -46,6 +46,15 @@ const calculateLeaveDays = async (
     };
   }
 
+  if (category === "EARLY_LEAVE") {
+    return {
+      totalCalendarDays: 0,
+      totalLeaveDays: 0,
+      skippedWeekendDays: 0,
+      skippedHolidayDays: 0,
+    };
+  }
+
   const dates = getDatesBetween(
     fromDate,
     toDate
