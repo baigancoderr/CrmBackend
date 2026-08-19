@@ -29,6 +29,7 @@
 const jwt = require("jsonwebtoken");
 const { redisClient } = require("../config/redis");
 const User = require("../modules/user/user.model");
+const { normalizeRole } = require("../utils/role.utils");
 
 const authMiddleware = async (req, res, next) => {
   try {
@@ -82,7 +83,7 @@ const authMiddleware = async (req, res, next) => {
     // Always use latest role from DB so role changes apply immediately.
     req.user = {
       ...decoded,
-      role: currentUser.role,
+      role: normalizeRole(currentUser.role),
       name: currentUser.name,
     };
 

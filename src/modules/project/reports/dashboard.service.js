@@ -8,7 +8,7 @@ const User = require("../../user/user.model");
 const taskService = require("../task/task.service");
 const taskSessionService = require("../task/taskSession.service");
 const TimeLog = require("../reports/timeLog.model");
-const { createAppError, isManagerRole, isTeamLeadRole } = require("../project.helper");
+const { createAppError, isManagerRole, isTeamLeadRole, normalizeRole } = require("../project.helper");
 const { getTodayDateKey } = require("../../../utils/istDateTime");
 
 const getPMDashboard = async (user) => {
@@ -172,7 +172,9 @@ const compareOpenTasks = (a, b) => {
 };
 
 const resolveScopedEmployeeIds = async (user) => {
-  if (isManagerRole(user.role)) {
+  const role = normalizeRole(user.role);
+
+  if (isManagerRole(role)) {
     const employees = await User.find({
       isActive: true,
       role: { $in: ["EMPLOYEE", "QA", "TL", "PROJECT_MANAGER"] },
@@ -182,7 +184,7 @@ const resolveScopedEmployeeIds = async (user) => {
     return employees.map((e) => e._id);
   }
 
-  if (user.role === "TL") {
+  if (role === "TL") {
     const areas = await ProjectArea.find({
       $or: [{ teamLead: user.id }, { projectLead: user.id }],
       isArchived: false,

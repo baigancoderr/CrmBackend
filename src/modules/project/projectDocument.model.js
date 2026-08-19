@@ -12,6 +12,11 @@ const projectDocumentSchema = new mongoose.Schema(
     uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     uploadedByNameSnapshot: { type: String, default: "", trim: true },
     isClientVisible: { type: Boolean, default: false },
+    visibility: {
+      type: String,
+      enum: ["ALL", "PM_ONLY", "TL_ONLY", "EMPLOYEES_ONLY"],
+      default: "ALL",
+    },
   },
   { timestamps: true }
 );

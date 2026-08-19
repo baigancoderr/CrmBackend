@@ -43,7 +43,7 @@ const notifyTaskSubmittedForReview = async ({ recipientId, actorId, task }) => {
     status: "PENDING",
     entityType: "TASK",
     entityId: task._id, 
-    link: `/projects/${task.projectId}/tasks/${task._id}`,
+    link: "/pm/task-review?action=reviews",
   });
 };
 
@@ -74,7 +74,7 @@ const notifyBlockerRaised = async ({ recipientIds, actorId, blocker, task }) => 
     status: "PENDING",
     entityType: "BLOCKER",
     entityId: blocker._id,
-    link: `/projects/${task.projectId}/tasks/${task._id}`,
+    link: "/pm/task-review?action=blockers",
   });
 };
 
@@ -143,7 +143,7 @@ const notifyUrgentTaskRequest = async ({ recipientId, actorId, task, employeeNam
     status: "PENDING",
     entityType: "TASK",
     entityId: task._id,
-    link: `/projects/${task.projectId}/tasks/${task._id}`,
+    link: "/pm/task-review?action=reviews",
   });
 };
 

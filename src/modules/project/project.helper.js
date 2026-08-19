@@ -133,9 +133,28 @@ const calcProjectProgressFromAreas = (tasksByArea = {}) => {
   return Math.round(sum / areaIds.length);
 };
 
-const isManagerRole = (role) => ["SUPER_ADMIN", "HR", "PROJECT_MANAGER"].includes(role);
-const isTeamLeadRole = (role) => isManagerRole(role) || role === "TL";
-const isClientRole = (role) => role === "CLIENT";
+const ROLE_ALIASES = {
+  PM: "PROJECT_MANAGER",
+  "PROJECT MANAGER": "PROJECT_MANAGER",
+  MANAGER: "PROJECT_MANAGER",
+  TEAM_LEADER: "TL",
+  "TEAM LEADER": "TL",
+  ADMIN: "SUPER_ADMIN",
+  "SUPER ADMIN": "SUPER_ADMIN",
+};
+
+const normalizeRole = (role) => {
+  const normalized = String(role || "")
+    .trim()
+    .toUpperCase();
+  if (!normalized) return "";
+  return ROLE_ALIASES[normalized] || normalized;
+};
+
+const isManagerRole = (role) =>
+  ["SUPER_ADMIN", "HR", "PROJECT_MANAGER"].includes(normalizeRole(role));
+const isTeamLeadRole = (role) => isManagerRole(role) || normalizeRole(role) === "TL";
+const isClientRole = (role) => normalizeRole(role) === "CLIENT";
 
 const leadRefId = (value) => {
   if (!value) return "";
@@ -164,6 +183,7 @@ module.exports = {
   calcProjectProgress,
   deriveAreaStatusFromTasks,
   calcProjectProgressFromAreas,
+  normalizeRole,
   isManagerRole,
   isTeamLeadRole,
   isClientRole,

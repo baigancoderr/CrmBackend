@@ -20,7 +20,12 @@ const router = express.Router({ mergeParams: true });
 router.get("/dashboard/pm", authMiddleware, getPMDashboard);
 router.get("/dashboard/tl", authMiddleware, getTLDashboard);
 router.get("/dashboard/employee", authMiddleware, getEmployeeDashboard);
-router.get("/employees-status", authMiddleware, getEmployeesWorkStatus);
+router.get(
+  "/employees-status",
+  authMiddleware,
+  roleMiddleware("SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL"),
+  getEmployeesWorkStatus
+);
 router.get(
   "/task-reviews",
   authMiddleware,
