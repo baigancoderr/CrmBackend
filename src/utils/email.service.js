@@ -33,10 +33,11 @@ let _transporter = null;
 
 const getTransporter = () => {
   if (_transporter) return _transporter;
+  const port = Number(process.env.SMTP_PORT) || 587;
   _transporter = nodemailer.createTransport({
     host:   process.env.SMTP_HOST || "smtp.gmail.com",
-    port:   Number(process.env.SMTP_PORT) || 587,
-    secure: false,
+    port,
+    secure: port === 465,
     auth: {
       user: process.env.SMTP_EMAIL,
       pass: process.env.SMTP_PASSWORD,
@@ -84,7 +85,16 @@ const sendMail = async (to, subject, html) => {
     ],
   });
 
-  console.log(`[EmailService] ✓ "${subject}" → ${recipients} (${info.messageId})`);
+  const accepted = info.accepted?.join(", ") || "none";
+  const rejected = info.rejected?.join(", ") || "none";
+  console.log(
+    `[EmailService] SMTP accepted "${subject}" → ${accepted} ` +
+    `(rejected: ${rejected}, messageId: ${info.messageId}, response: ${info.response || "n/a"})`
+  );
+
+  if (info.rejected?.length) {
+    console.warn(`[EmailService] SMTP rejected recipients: ${rejected}`);
+  }
 };
 
 // ── Recipient helpers ─────────────────────────────────────────────────────────
