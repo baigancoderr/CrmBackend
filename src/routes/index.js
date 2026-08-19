@@ -30,6 +30,8 @@ router.use("/storage", require("../modules/storage/storage.routes"));
 
 router.use("/tickets", require("../modules/tickets/ticket.routes"));
 
+router.use("/announcements", require("../modules/announcement/announcement.routes"));
+
 // Project Management Module
 router.use("/", require("../modules/project"));
 

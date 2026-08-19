@@ -20,7 +20,7 @@ const leaveSchema = new mongoose.Schema(
 
     category: {
       type: String,
-      enum: ["FULL_DAY", "HALF_DAY"],
+      enum: ["FULL_DAY", "HALF_DAY", "EARLY_LEAVE"],
       default: "FULL_DAY",
     },
 
@@ -101,6 +101,7 @@ leaveDeductionType: {
     "LEAVE_BALANCE",
     "SALARY",
     "BOTH",
+    "EARLY_LEAVE",
   ],
   required: true,
 },
@@ -114,6 +115,11 @@ salaryDeductionDays: {
   type: Number,
   default: 0,
 },
+
+    earlyLeaveHours: {
+      type: Number,
+      default: 0,
+    },
 
     approvedBy: {
       type: mongoose.Schema.Types.ObjectId,

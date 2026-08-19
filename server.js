@@ -19,6 +19,9 @@ const routes = require("./src/routes");
 const {
   initializeChatSocket,
 } = require("./src/modules/chat/chat.socket");
+const {
+  initializeTicketSocket,
+} = require("./src/modules/tickets/ticket.socket");
 const { UPLOAD_LIMITS } = require("./src/constants/uploadLimits");
 
 const app = express();
@@ -251,7 +254,11 @@ app.use(errorMiddleware);
     const { startTaskScheduler } = require("./src/modules/project/task/taskScheduler");
     startTaskScheduler();
 
+    const { startAnnouncementScheduler } = require("./src/modules/announcement/announcement.scheduler");
+    startAnnouncementScheduler();
+
     initializeChatSocket(io);
+    initializeTicketSocket(io);
 
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);

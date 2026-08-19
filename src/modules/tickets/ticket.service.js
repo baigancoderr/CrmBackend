@@ -1,14 +1,59 @@
 const Ticket = require("./ticket.model");
 const TicketActivity = require("./ticketActivity.model");
 const User = require("../user/user.model");
+const notificationService = require("../notifications/notification.service");
 const storageService = require("../../services/storage.service");
 const { isValidTicketCategory } = require("./ticket.constants");
+const ticketSocket = require("./ticket.socket");
 
 // ── Role constants ────────────────────────────────────────────────────────────
 const MANAGER_ROLES = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL"];
 // Roles that can act on an escalated ticket (TL can escalate but cannot resolve after escalation)
 const SENIOR_ROLES  = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER"];
 const ALL_STAFF_ROLES = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL", "ACCOUNTANT", "EMPLOYEE"];
+const ACTIVE_TICKET_STATUSES = [
+  "OPEN",
+  "ASSIGNED",
+  "IN_PROGRESS",
+  "WAITING_FOR_RESPONSE",
+  "ON_HOLD",
+  "ESCALATED",
+  "REOPENED",
+  "PENDING_APPROVAL",
+  "APPROVED",
+];
+const FINAL_TICKET_STATUSES = ["RESOLVED", "CLOSED", "REJECTED"];
+
+const createTicketAppNotifications = async ({ recipients = [], ticket, type, title, message, status = "INFO", meta = {} }) => {
+  const uniqueRecipients = [...new Set(recipients.filter(Boolean).map((id) => String(id)))];
+
+  if (!uniqueRecipients.length || !ticket) {
+    return [];
+  }
+
+  const actorId =
+    ticket.createdBy && typeof ticket.createdBy === "object"
+      ? ticket.createdBy._id
+      : ticket.createdBy || null;
+
+  return notificationService.createNotificationsForRecipients({
+    recipientIds: uniqueRecipients,
+    actorId,
+    type,
+    title,
+    message,
+    status,
+    entityType: "TICKET",
+    entityId: ticket._id,
+    link: `/tickets/${ticket._id}`,
+    meta: {
+      ticketId: String(ticket._id),
+      ticketNumber: ticket.ticketNumber || "",
+      subject: ticket.subject || "",
+      ...meta,
+    },
+  });
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const createAppError = (message, statusCode = 400) => {
@@ -103,9 +148,24 @@ const createTicket = async (userId, userRole, userName, employeeId, payload, fil
   await logActivity(ticket._id, "TICKET_CREATED", { id: userId, name: userName, role: userRole },
     `Ticket ${ticketNumber} created.`);
 
-  return Ticket.findById(ticket._id)
+  const createdTicket = await Ticket.findById(ticket._id)
     .populate("createdBy", "name employeeId role")
     .populate("assignedTo", "name employeeId role");
+
+  await createTicketAppNotifications({
+    recipients: [...new Set([String(userId), ...watcherIds.map(String)])],
+    ticket: createdTicket,
+    type: "TICKET_CREATED",
+    title: "New ticket created",
+    message: `Ticket ${createdTicket.ticketNumber} was created: ${createdTicket.subject}`,
+    status: "INFO",
+    meta: { priority: createdTicket.priority, category: createdTicket.category },
+  });
+
+  // Emit socket notification
+  ticketSocket.notifyTicketCreated(createdTicket, watcherIds);
+
+  return createdTicket;
 };
 
 // ── Assign ticket ─────────────────────────────────────────────────────────────
@@ -135,6 +195,7 @@ const assignTicket = async (ticketId, actor, payload) => {
   }
 
   const oldAssignee = ticket.assignedToNameSnapshot || "Unassigned";
+  const oldAssigneeId = ticket.assignedTo ? String(ticket.assignedTo) : null;
 
   ticket.assignedTo = assignee._id;
   ticket.assignedToNameSnapshot = assignee.name;
@@ -151,10 +212,29 @@ const assignTicket = async (ticketId, actor, payload) => {
     `Ticket assigned to ${assignee.name}${note ? `: ${note}` : ""}`,
     { assignedTo: oldAssignee }, { assignedTo: assignee.name });
 
-  return Ticket.findById(ticket._id)
+  const populatedTicket = await Ticket.findById(ticket._id)
     .populate("createdBy", "name employeeId role")
-    .populate("assignedTo", "name employeeId role")
-;
+    .populate("assignedTo", "name employeeId role");
+
+  await createTicketAppNotifications({
+    recipients: [
+      String(ticket.createdBy),
+      String(populatedTicket.assignedTo?._id || populatedTicket.assignedTo),
+      ...ticket.watchers.map(String),
+      String(oldAssigneeId || "")
+    ],
+    ticket: populatedTicket,
+    type: "TICKET_ASSIGNED",
+    title: "Ticket assigned",
+    message: `Ticket ${populatedTicket.ticketNumber} has been assigned to ${populatedTicket.assignedTo?.name || assignee.name}.`,
+    status: "INFO",
+    meta: { oldAssignee: oldAssignee || "Unassigned", assignedTo: assignee.name, assignedBy: actor.name },
+  });
+
+  // Emit socket notification
+  ticketSocket.notifyTicketAssigned(populatedTicket, oldAssigneeId);
+
+  return populatedTicket;
 };
 
 // ── Accept ticket (assignee picks it up) ──────────────────────────────────────
@@ -284,10 +364,37 @@ const changeStatus = async (ticketId, actor, payload) => {
   await logActivity(ticket._id, actionMap[newStatus] || "STATUS_CHANGED", actor,
     `Status changed${note ? `: ${note}` : ""}`, { status: oldStatus }, { status: newStatus });
 
-  return Ticket.findById(ticket._id)
+  const populatedTicket = await Ticket.findById(ticket._id)
     .populate("createdBy", "name employeeId role")
-    .populate("assignedTo", "name employeeId role")
-;
+    .populate("assignedTo", "name employeeId role");
+
+  const affectedUserIds = [
+    populatedTicket.createdBy?._id,
+    populatedTicket.assignedTo?._id,
+    ...(populatedTicket.watchers || [])
+  ]
+    .filter(Boolean)
+    .map(String);
+
+  await createTicketAppNotifications({
+    recipients: affectedUserIds,
+    ticket: populatedTicket,
+    type: "TICKET_STATUS_CHANGED",
+    title: `Ticket status changed to ${newStatus}`,
+    message: `Ticket ${populatedTicket.ticketNumber} status changed from ${oldStatus} to ${newStatus}.`,
+    status: "INFO",
+    meta: { oldStatus, newStatus, priority: populatedTicket.priority },
+  });
+
+  for (const userId of [...new Set(affectedUserIds)]) {
+    const count = await getMyUnreadCount(userId);
+    ticketSocket.emitUnreadCount(String(userId), count);
+  }
+
+  // Emit socket notification
+  ticketSocket.notifyTicketStatusChanged(populatedTicket, oldStatus, newStatus);
+
+  return populatedTicket;
 };
 
 // ── Change priority ───────────────────────────────────────────────────────────
@@ -310,7 +417,28 @@ const changePriority = async (ticketId, actor, payload) => {
     `Priority changed from ${oldPriority} to ${newPriority}`,
     { priority: oldPriority }, { priority: newPriority });
 
-  return Ticket.findById(ticket._id).populate("assignedTo", "name employeeId role");
+  const populatedTicket = await Ticket.findById(ticket._id).populate("assignedTo", "name employeeId role");
+
+  const recipients = [
+    String(ticket.createdBy),
+    ticket.assignedTo ? String(ticket.assignedTo) : null,
+    ...(ticket.watchers || []).map(String),
+  ].filter(Boolean);
+
+  await createTicketAppNotifications({
+    recipients,
+    ticket: populatedTicket,
+    type: "TICKET_PRIORITY_CHANGED",
+    title: `Ticket priority changed to ${newPriority}`,
+    message: `Ticket ${populatedTicket.ticketNumber} priority changed from ${oldPriority} to ${newPriority}.`,
+    status: "INFO",
+    meta: { oldPriority, newPriority },
+  });
+
+  // Emit socket notification
+  ticketSocket.notifyTicketPriorityChanged(populatedTicket, oldPriority, newPriority);
+
+  return populatedTicket;
 };
 
 // ── Add watcher ───────────────────────────────────────────────────────────────
@@ -517,9 +645,35 @@ const rateTicket = async (ticketId, actor, payload) => {
   return { rating, feedback: ticket.ratingFeedback, ratedAt: ticket.ratedAt };
 };
 
+// ── Get unread count ──────────────────────────────────────────────────────────
+/**
+ * Get unread ticket count for a user
+ * Counts: tickets assigned to them in active status + tickets they raised with updates
+ */
+const getMyUnreadCount = async (userId) => {
+  const user = await User.findById(userId).lean();
+  if (!user) {
+    throw createAppError("User not found", 404);
+  }
+
+  const assignedCount = await Ticket.countDocuments({
+    assignedTo: userId,
+    status: { $in: ACTIVE_TICKET_STATUSES },
+    isDeleted: false,
+  });
+
+  const raisedCount = await Ticket.countDocuments({
+    createdBy: userId,
+    status: { $in: ACTIVE_TICKET_STATUSES },
+    isDeleted: false,
+  });
+
+  return assignedCount + raisedCount;
+};
+
 module.exports = {
   createTicket, assignTicket, acceptTicket, transferTicket,
   changeStatus, changePriority, addWatcher, removeWatcher,
   getTicketById, getMyTickets, getAssignedTickets, getAllTickets,
-  getTicketTimeline, rateTicket, logActivity,
+  getTicketTimeline, rateTicket, getMyUnreadCount, logActivity,
 };

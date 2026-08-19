@@ -168,6 +168,7 @@ const createLeave = async (body,employeeId) => {
     leaveDeductionType,
     leaveBalanceDays = 0,
     salaryDeductionDays = 0,
+    earlyLeaveHours = 0,
     reportingManagerId = "",
   } = body;
 
@@ -185,13 +186,13 @@ const createLeave = async (body,employeeId) => {
     );
   }
 
-  if (!["FULL_DAY", "HALF_DAY"].includes(category)) {
+  if (!["FULL_DAY", "HALF_DAY", "EARLY_LEAVE"].includes(category)) {
     throw new Error(
       "Invalid leave category."
     );
   }
 
-  if (!["LEAVE_BALANCE","SALARY","BOTH",].includes(leaveDeductionType)) {
+  if (!["LEAVE_BALANCE","SALARY","BOTH","EARLY_LEAVE"].includes(leaveDeductionType)) {
     throw new Error(
       "Invalid leave deduction type."
     );
@@ -238,7 +239,7 @@ const createLeave = async (body,employeeId) => {
 
   const leaveCalculation =await calculateLeaveDays(fromDate,toDate,category);
 
-  if (leaveCalculation.totalLeaveDays <=0) {
+  if (category !== "EARLY_LEAVE" && leaveCalculation.totalLeaveDays <=0) {
     throw new Error(
       "No leave days found after excluding weekends and holidays."
     );
@@ -246,7 +247,18 @@ const createLeave = async (body,employeeId) => {
 
   const totalLeaveDays = leaveCalculation.totalLeaveDays;
 
-  if (leaveDeductionType ==="LEAVE_BALANCE") {
+  if (leaveDeductionType === "EARLY_LEAVE") {
+    if (Number(earlyLeaveHours) <= 0) {
+      throw new Error(
+        "Early leave hours are required."
+      );
+    }
+    if (Number(leaveBalanceDays) !== 0 || Number(salaryDeductionDays) !== 0) {
+      throw new Error(
+        "Early leave must not deduct from leave balance or salary."
+      );
+    }
+  } else if (leaveDeductionType ==="LEAVE_BALANCE") {
     if (
       Number(leaveBalanceDays) !==
       totalLeaveDays
@@ -255,17 +267,13 @@ const createLeave = async (body,employeeId) => {
         "Leave balance days should equal total leave days."
       );
     }
-  }
-
-  if (leaveDeductionType ==="SALARY") {
+  } else if (leaveDeductionType ==="SALARY") {
     if (Number(salaryDeductionDays) !==totalLeaveDays) {
       throw new Error(
         "Salary deduction days should equal total leave days."
       );
     }
-  }
-
-  if (leaveDeductionType === "BOTH") {
+  } else if (leaveDeductionType === "BOTH") {
     if (Number(leaveBalanceDays) +Number(salaryDeductionDays) !==totalLeaveDays) {
       throw new Error(
         "Leave Balance Days + Salary Deduction Days must equal total leave days."
@@ -290,13 +298,13 @@ const createLeave = async (body,employeeId) => {
     );
   }
 
-  if (leaveDeductionType ==="LEAVE_BALANCE" && balance.remainingLeaves < leaveBalanceDays) {
+  if (leaveDeductionType ==="EARLY_LEAVE") {
+    // Early leave does not affect any bucket or salary deduction.
+  } else if (leaveDeductionType ==="LEAVE_BALANCE" && balance.remainingLeaves < leaveBalanceDays) {
     throw new Error(
       "Insufficient leave balance."
     );
-  }
-
-  if (leaveDeductionType === "BOTH" && balance.remainingLeaves <leaveBalanceDays) { 
+  } else if (leaveDeductionType === "BOTH" && balance.remainingLeaves <leaveBalanceDays) { 
     throw new Error(
       "Insufficient leave balance."
     );
@@ -335,6 +343,7 @@ const createLeave = async (body,employeeId) => {
       leaveDeductionType,
       leaveBalanceDays,
       salaryDeductionDays,
+      earlyLeaveHours: Number(earlyLeaveHours) || 0,
       reason: reason.trim(),
       attachment,
       mentions:
@@ -714,13 +723,13 @@ const approveLeave = async (id,approver) => {
   });
 
   // Leave Balance Validation
-  if (leave.leaveDeductionType ==="LEAVE_BALANCE" &&balance.remainingLeaves <leave.leaveBalanceDays) {
+  if (leave.leaveDeductionType ==="EARLY_LEAVE") {
+    // No balance deduction for early leave.
+  } else if (leave.leaveDeductionType ==="LEAVE_BALANCE" &&balance.remainingLeaves <leave.leaveBalanceDays) {
     throw new Error(
       "Insufficient leave balance."
     );
-  }
-
-  if (leave.leaveDeductionType ==="BOTH" &&balance.remainingLeaves <leave.leaveBalanceDays) {
+  } else if (leave.leaveDeductionType ==="BOTH" &&balance.remainingLeaves <leave.leaveBalanceDays) {
     throw new Error(
       "Insufficient leave balance."
     );

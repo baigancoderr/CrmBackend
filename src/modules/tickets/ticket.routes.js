@@ -9,9 +9,10 @@ const ticketController = require("./ticket.controller");
 const { UPLOAD_MAX_FILES } = require("../../constants/uploadLimits");
 
 // ── Role sets ─────────────────────────────────────────────────────────────────
-const ALL_ROLES      = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL", "ACCOUNTANT", "EMPLOYEE"];
-const MANAGER_ROLES  = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL"];
-const ASSIGNEE_ROLES = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL", "ACCOUNTANT"];
+const ALL_ROLES          = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL", "ACCOUNTANT", "EMPLOYEE"];
+const MANAGER_ROLES      = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL"];
+const ASSIGNEE_ROLES     = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL", "ACCOUNTANT"];
+const DASHBOARD_ROLES    = ["SUPER_ADMIN", "HR", "PROJECT_MANAGER"];
 
 // ── Dashboards ────────────────────────────────────────────────────────────────
 router.get(
@@ -24,15 +25,23 @@ router.get(
 router.get(
   "/dashboard/team",
   authMiddleware,
-  roleMiddleware(...ASSIGNEE_ROLES),
+  roleMiddleware(...DASHBOARD_ROLES),
   ticketController.getTeamDashboard
 );
 
 router.get(
   "/dashboard/admin",
   authMiddleware,
-  roleMiddleware(...MANAGER_ROLES),
+  roleMiddleware(...DASHBOARD_ROLES),
   ticketController.getAdminDashboard
+);
+
+// ── Unread count ──────────────────────────────────────────────────────────────
+router.get(
+  "/unread-count",
+  authMiddleware,
+  roleMiddleware(...ALL_ROLES),
+  ticketController.getMyUnreadCount
 );
 
 // ── Ticket list & creation ────────────────────────────────────────────────────
