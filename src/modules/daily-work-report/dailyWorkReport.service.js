@@ -158,41 +158,103 @@ const validateAttachment = (attachment) => {
   };
 };
 
-const getDefaultHrManager = async (excludeUserId = "") => {
+const escapeRegex = (value) =>
+  String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const toManagerOption = (record) => ({
+  _id: String(record._id),
+  name: record.name || "",
+  employeeId: record.employeeId || "",
+  role: record.role || "",
+});
+
+const getRecordId = (value) => {
+  if (!value) {
+    return "";
+  }
+  if (typeof value === "object") {
+    return value._id ? String(value._id) : "";
+  }
+  return String(value);
+};
+
+const findActiveManagers = async ({ department, roles, excludeUserId }) => {
   const filter = {
-    role: "HR",
     isActive: true,
+    role: { $in: roles },
+    _id: { $ne: excludeUserId },
   };
 
-  if (excludeUserId) {
-    filter._id = { $ne: excludeUserId };
+  if (department) {
+    filter.department = new RegExp(`^${escapeRegex(department)}$`, "i");
   }
 
-  return User.findOne(filter)
-    .select("name employeeId role")
+  return User.find(filter)
+    .select("name employeeId role department")
     .sort({ name: 1 });
+};
+
+const getDepartmentReportingManagerOptions = async (user) => {
+  const department = String(user.department || "").trim();
+  const userRole = String(user.role || "EMPLOYEE").toUpperCase();
+  const excludeUserId = user._id;
+  let records = [];
+
+  if (["EMPLOYEE", "ACCOUNTANT"].includes(userRole) && department) {
+    records = await findActiveManagers({
+      department,
+      roles: ["TL"],
+      excludeUserId,
+    });
+  } else if (userRole === "TL") {
+    if (department) {
+      records = await findActiveManagers({
+        department,
+        roles: ["PROJECT_MANAGER"],
+        excludeUserId,
+      });
+    }
+    if (!records.length) {
+      records = await findActiveManagers({
+        roles: ["PROJECT_MANAGER"],
+        excludeUserId,
+      });
+    }
+  } else if (userRole === "PROJECT_MANAGER") {
+    records = await findActiveManagers({
+      roles: ["HR"],
+      excludeUserId,
+    });
+  }
+
+  if (!records.length) {
+    records = await findActiveManagers({
+      roles: ["HR"],
+      excludeUserId,
+    });
+  }
+
+  return records.map(toManagerOption);
 };
 
 const getMyPrefillDetails = async (userId) => {
   const user = await User.findById(userId)
-    .select("name employeeId manager")
-    .populate("manager", "name employeeId role");
+    .select("name employeeId manager teamLeader department role")
+    .populate("manager", "name employeeId role")
+    .populate("teamLeader", "name employeeId role");
 
   if (!user) {
     throw createAppError("Employee profile not found.", 404);
   }
 
-  let managerRecord =
-    user.manager &&
-    typeof user.manager === "object" &&
-    REPORTING_MANAGER_ROLES.includes(user.manager.role)
-      ? user.manager
-      : null;
-
-  // No assigned PM/TL/HR manager — default to an active HR user.
-  if (!managerRecord) {
-    managerRecord = await getDefaultHrManager(userId);
-  }
+  const reportingManagers = await getDepartmentReportingManagerOptions(user);
+  const assignedManagerIds = [getRecordId(user.manager), getRecordId(user.teamLeader)].filter(
+    Boolean
+  );
+  const selectedManager =
+    reportingManagers.find((manager) => assignedManagerIds.includes(manager._id)) ||
+    reportingManagers[0] ||
+    null;
 
   const yesterdayDate = getRelativeDateString(-1);
   const hasYesterdayReport = await DailyWorkReport.exists({
@@ -213,8 +275,10 @@ const getMyPrefillDetails = async (userId) => {
   return {
     employeeName: user.name || "",
     employeeId: user.employeeId || "",
-    reportingManagerId: managerRecord ? String(managerRecord._id) : "",
-    reportingManager: managerRecord ? managerRecord.name || "" : "",
+    department: user.department || "",
+    reportingManagerId: selectedManager ? selectedManager._id : "",
+    reportingManager: selectedManager ? selectedManager.name || "" : "",
+    reportingManagers,
   };
 };
 

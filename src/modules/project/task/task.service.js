@@ -955,10 +955,17 @@ const submitForReview = async (projectId, taskId, user, payload = {}, files = []
   }
 
   const area = await ProjectArea.findById(task.projectAreaId).select("teamLead projectLead");
-  await notifyAreaLeads(area, notifyTaskSubmittedForReview, {
-    actorId: user.id,
-    task,
-  });
+  const project = await Project.findById(projectId).select("projectManager").lean();
+  const recipientIds = [...new Set(
+    [area?.teamLead, area?.projectLead, project?.projectManager]
+      .filter(Boolean)
+      .map((id) => String(id))
+  )];
+  await Promise.all(
+    recipientIds.map((recipientId) =>
+      notifyTaskSubmittedForReview({ recipientId, actorId: user.id, task })
+    )
+  );
 
   await logTaskHistory({
     taskId: task._id,

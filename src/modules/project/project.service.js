@@ -18,6 +18,7 @@ const {
   calcProjectProgressFromAreas,
   isManagerRole,
   isClientRole,
+  normalizeRole,
   USER_POPULATE,
 } = require("./project.helper");
 const {
@@ -48,6 +49,10 @@ const findTlProjectIds = async (userId) => {
 };
 
 const assertProjectAccess = async (projectId, user, { write = false } = {}) => {
+  if (!mongoose.Types.ObjectId.isValid(projectId)) {
+    throw createAppError("Project not found.", 404);
+  }
+
   const project = await Project.findById(projectId);
   if (!project) throw createAppError("Project not found.", 404);
 
@@ -62,7 +67,7 @@ const assertProjectAccess = async (projectId, user, { write = false } = {}) => {
     return project;
   }
 
-  if (user.role === "TL") {
+  if (normalizeRole(user.role) === "TL") {
     const [isActiveMember, isAreaLead] = await Promise.all([
       ProjectMember.exists({ projectId, userId: user.id, isActive: true }),
       ProjectArea.exists({

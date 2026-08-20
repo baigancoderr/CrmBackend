@@ -3,7 +3,36 @@ const TaskAttachment = require("./task/taskAttachment.model");
 const projectService = require("./project.service");
 const storageService = require("../../services/storage.service");
 const { createAppError, parsePagination, buildPaginatedResult, logProjectActivity } = require("./project.helper");
-const { TL_ROLES } = require("./project.constants");
+const { TL_ROLES, PM_ROLES } = require("./project.constants");
+
+const DOCUMENT_VISIBILITY = ["ALL", "PM_ONLY", "TL_ONLY", "EMPLOYEES_ONLY"];
+
+const normalizeVisibility = (value) => {
+  const visibility = String(value || "ALL").trim().toUpperCase();
+  if (!DOCUMENT_VISIBILITY.includes(visibility)) {
+    throw createAppError("Invalid document visibility.", 422);
+  }
+  return visibility;
+};
+
+const buildDocumentVisibilityFilter = (user) => {
+  const role = user.role;
+
+  if (PM_ROLES.includes(role)) return {};
+
+  if (role === "CLIENT") {
+    return { visibility: "ALL", isClientVisible: true };
+  }
+
+  const allowed = ["ALL"];
+  if (role === "TL") {
+    allowed.push("TL_ONLY");
+  } else if (role === "EMPLOYEE") {
+    allowed.push("EMPLOYEES_ONLY");
+  }
+
+  return { visibility: { $in: allowed } };
+};
 
 const assertCanManageProjectDocuments = (user) => {
   if (!TL_ROLES.includes(user.role)) {
@@ -27,6 +56,8 @@ const uploadProjectDocument = async (projectId, user, payload, files = []) => {
 
   if (!files.length) throw createAppError("At least one file is required.", 422);
 
+  const visibility = normalizeVisibility(payload.visibility);
+
   const docs = [];
   for (const file of files) {
     const fileMeta = await saveUploadedFile(file);
@@ -38,6 +69,7 @@ const uploadProjectDocument = async (projectId, user, payload, files = []) => {
       uploadedBy: user.id,
       uploadedByNameSnapshot: user.name,
       isClientVisible: payload.isClientVisible === true,
+      visibility,
     });
     docs.push(doc);
 
@@ -56,8 +88,7 @@ const uploadProjectDocument = async (projectId, user, payload, files = []) => {
 
 const listProjectDocuments = async (projectId, user, query = {}) => {
   await projectService.assertProjectAccess(projectId, user);
-  const filter = { projectId };
-  if (user.role === "CLIENT") filter.isClientVisible = true;
+  const filter = { projectId, ...buildDocumentVisibilityFilter(user) };
 
   const { page, limit, skip, sort } = parsePagination(query);
   const [records, totalRecords] = await Promise.all([
@@ -87,6 +118,10 @@ const updateProjectDocument = async (projectId, docId, user, payload = {}) => {
 
   if (payload.isClientVisible !== undefined) {
     document.isClientVisible = payload.isClientVisible === true;
+  }
+
+  if (payload.visibility !== undefined) {
+    document.visibility = normalizeVisibility(payload.visibility);
   }
 
   await document.save();

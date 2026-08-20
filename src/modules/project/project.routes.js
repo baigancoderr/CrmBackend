@@ -18,6 +18,7 @@ const {
   deleteProject,
   addProjectMembers,
 } = require("./project.controller");
+const { getEmployeesWorkStatus } = require("./reports/report.controller");
 const {
   uploadProjectDocuments,
   listProjectDocuments,
@@ -30,6 +31,12 @@ const router = express.Router();
 
 router.post("/", authMiddleware, roleMiddleware("SUPER_ADMIN", "HR", "PROJECT_MANAGER"), validateCreateProject, createProject);
 router.get("/", authMiddleware, listProjects);
+router.get(
+  "/employees-status",
+  authMiddleware,
+  roleMiddleware("SUPER_ADMIN", "HR", "PROJECT_MANAGER", "TL"),
+  getEmployeesWorkStatus
+);
 router.get("/tasks/mine", authMiddleware, roleMiddleware("EMPLOYEE"), listMyWorkingTasks);
 router.get("/:id/documents", authMiddleware, listProjectDocuments);
 router.post(
