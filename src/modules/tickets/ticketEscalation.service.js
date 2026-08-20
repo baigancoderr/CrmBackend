@@ -88,7 +88,7 @@ const escalateTicket = async (ticketId, actor, payload) => {
     status: "INFO",
     entityType: "TICKET",
     entityId: ticket._id,
-    link: `/tickets/${ticket._id}`,
+    link: `/tickets/detail/${ticket._id}`,
     meta: {
       ticketId: String(ticket._id),
       ticketNumber: ticket.ticketNumber,

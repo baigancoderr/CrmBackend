@@ -13,7 +13,7 @@ const notifyProjectAssigned = async ({ recipientIds, actorId, project, message =
     status: "INFO",
     entityType: "PROJECT",
     entityId: project._id,
-    link: `/projects/${project._id}`,
+    link: `/pm/projects/detail/${project._id}`,
     meta: { projectCode: project.projectCode, projectName: project.projectName },
   });
 };
@@ -28,7 +28,7 @@ const notifyTaskAssigned = async ({ recipientId, actorId, task, project }) => {
     status: "INFO",
     entityType: "TASK",
     entityId: task._id,
-    link: `/projects/${task.projectId}/tasks/${task._id}`,
+    link: `/pm/projects/${task.projectId}/tasks/${task._id}`,
     meta: { taskTitle: task.title, projectId: task.projectId },
   });
 };
@@ -59,7 +59,7 @@ const notifyTaskReviewDecision = async ({ recipientId, actorId, task, approved, 
     status: approved ? "APPROVED" : "REJECTED",
     entityType: "TASK",
     entityId: task._id,
-    link: `/projects/${task.projectId}/tasks/${task._id}`,
+    link: `/pm/projects/${task.projectId}/tasks/${task._id}`,
     meta: { reason },
   });
 };
@@ -88,7 +88,7 @@ const notifyDependencyResolved = async ({ recipientId, actorId, task, dependency
     status: "INFO",
     entityType: "TASK",
     entityId: task._id,
-    link: `/projects/${task.projectId}/tasks/${task._id}`,
+    link: `/pm/projects/${task.projectId}/tasks/${task._id}`,
   });
 };
 
@@ -102,7 +102,7 @@ const notifyProjectClosed = async ({ recipientIds, actorId, project }) => {
     status: "INFO",
     entityType: "PROJECT",
     entityId: project._id,
-    link: `/projects/${project._id}`,
+    link: `/pm/projects/detail/${project._id}`,
   });
 };
 
@@ -116,7 +116,7 @@ const notifyProjectCancelled = async ({ recipientIds, actorId, project }) => {
     status: "INFO",
     entityType: "PROJECT",
     entityId: project._id,
-    link: `/projects/${project._id}`,
+    link: `/pm/projects/detail/${project._id}`,
   });
 };
 
@@ -129,7 +129,7 @@ const notifyDeadlineApproaching = async ({ recipientId, task, daysLeft }) => {
     status: "INFO",
     entityType: "TASK",
     entityId: task._id,
-    link: `/projects/${task.projectId}/tasks/${task._id}`,
+    link: `/pm/projects/${task.projectId}/tasks/${task._id}`,
   });
 };
 

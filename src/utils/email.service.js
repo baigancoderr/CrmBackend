@@ -134,24 +134,40 @@ const fmtDate = (val) => {
  * Recipients:
  *   - All HR users
  *   - All SUPER_ADMIN users
- *   - Selected Reporting Manager (always)
- *   - Team Leader (optional — only if employee has one assigned)
+ *   - All PROJECT_MANAGER users
+ *   - Department TL(s) / Assigned Team Leader
+ *   - Selected Reporting Manager (if any)
  */
-const sendLeaveAppliedEmail = async ({ leave, employee, reportingManagerId, teamLeaderId }) => {
+const sendLeaveAppliedEmail = async ({
+  leave,
+  employee,
+  reportingManagerId,
+  teamLeaderId,
+  departmentTlIds = [],
+}) => {
   try {
-    // Fetch admin emails + manager email in parallel; TL is optional
-    const [adminEmails, managerEmail, tlEmail] = await Promise.all([
-      getAdminEmails(),
+    const [adminAndPmUsers, managerEmail, tlEmail, deptTlUsers] = await Promise.all([
+      User.find(
+        { role: { $in: ["HR", "SUPER_ADMIN", "PROJECT_MANAGER"] }, isActive: true },
+        { email: 1 }
+      ).lean(),
       getUserEmail(reportingManagerId),
       teamLeaderId ? getUserEmail(teamLeaderId) : Promise.resolve(null),
+      Array.isArray(departmentTlIds) && departmentTlIds.length > 0
+        ? User.find({ _id: { $in: departmentTlIds }, isActive: true }, { email: 1 }).lean()
+        : Promise.resolve([]),
     ]);
+
+    const adminAndPmEmails = adminAndPmUsers.map((u) => u.email).filter(Boolean);
+    const deptTlEmails = (deptTlUsers || []).map((u) => u.email).filter(Boolean);
 
     // Get employee's own email to exclude them from recipients
     const employeeEmail = employee?.email || (await getUserEmail(leave.employeeId));
 
     // Build deduplicated recipient list — EXCLUDE the employee who applied
     const toSet = new Set([
-      ...adminEmails,
+      ...adminAndPmEmails,
+      ...deptTlEmails,
       managerEmail,
       tlEmail,
     ].filter(Boolean));

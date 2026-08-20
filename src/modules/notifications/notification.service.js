@@ -324,21 +324,40 @@ const notifyExtraWorkDecision = async ({ request, action, actorId }) => {
   });
 };
 
-const notifyLeaveRequested = async ({ leave, employee, reportingManagerId }) => {
+const notifyLeaveRequested = async ({
+  leave,
+  employee,
+  reportingManagerId,
+  departmentTlIds = [],
+  mentionIds = [],
+}) => {
   const recipientIds = new Set();
 
   if (reportingManagerId) {
     recipientIds.add(String(reportingManagerId));
   }
 
-  const hrUsers = await User.find({
-    role: { $in: ["HR", "SUPER_ADMIN"] },
+  (departmentTlIds || []).forEach((id) => {
+    if (id) recipientIds.add(String(id));
+  });
+
+  (mentionIds || []).forEach((id) => {
+    if (id) recipientIds.add(String(id));
+  });
+
+  const managementUsers = await User.find({
+    role: { $in: ["HR", "SUPER_ADMIN", "PROJECT_MANAGER"] },
     isActive: true,
   })
     .select("_id")
     .lean();
 
-  hrUsers.forEach((user) => recipientIds.add(String(user._id)));
+  managementUsers.forEach((user) => recipientIds.add(String(user._id)));
+
+  const applicantId = String(leave?.employeeId || employee?._id || "");
+  if (applicantId) {
+    recipientIds.delete(applicantId);
+  }
 
   const employeeName = employee?.name || "An employee";
   const reason = leave?.reason || "No reason provided";

@@ -281,7 +281,9 @@ const createLeave = async (body,employeeId) => {
     }
   }
 
-  const employee = await User.findById(employeeId).select("joiningDate manager teamLeader");
+  const employee = await User.findById(employeeId).select(
+    "name employeeId email joiningDate manager teamLeader department"
+  );
   if (!employee) {
     throw new Error("Employee not found.");
   }
@@ -310,78 +312,103 @@ const createLeave = async (body,employeeId) => {
     );
   }
 
-  const mentionUsers = await getMentionUsers(mentions);
-
-  let selectedManagerId = String(reportingManagerId || "").trim();
-  if (!selectedManagerId && employee.manager) {
-    selectedManagerId = String(employee.manager);
-  }
-
-  if (!selectedManagerId) {
-    throw new Error("Reporting manager is required.");
-  }
-
-  const reportingManager = await User.findOne({
-    _id: selectedManagerId,
-    role: { $in: REPORTING_MANAGER_ROLES },
+  // ── Auto-resolve Department TL, all HRs, all PMs, and all Super Admins ───────
+  const deptTlQuery = {
+    role: "TL",
     isActive: true,
-  }).select("name employeeId role");
-
-  if (!reportingManager) {
-    throw new Error("Please select a valid reporting manager.");
+  };
+  if (employee.department && String(employee.department).trim()) {
+    deptTlQuery.department = employee.department;
   }
 
-  const leave =await Leave.create({
-      employeeId,
-      fromDate,
-      toDate,
-      category,
-      totalCalendarDays:leaveCalculation.totalCalendarDays,
-      totalLeaveDays:leaveCalculation.totalLeaveDays,
-      skippedWeekendDays:leaveCalculation.skippedWeekendDays,
-      skippedHolidayDays:leaveCalculation.skippedHolidayDays,
-      leaveDeductionType,
-      leaveBalanceDays,
-      salaryDeductionDays,
-      earlyLeaveHours: Number(earlyLeaveHours) || 0,
-      reason: reason.trim(),
-      attachment,
-      mentions:
-        mentionUsers.map(
-          (user) => user._id
-        ),
-      reportingManager: reportingManager._id,
-      reportingManagerSnapshot: reportingManager.name || "",
+  const [deptTls, hrUsers, pmUsers, adminUsers] = await Promise.all([
+    User.find(deptTlQuery).select("_id name employeeId email role").lean(),
+    User.find({ role: "HR", isActive: true }).select("_id name employeeId email role").lean(),
+    User.find({ role: "PROJECT_MANAGER", isActive: true }).select("_id name employeeId email role").lean(),
+    User.find({ role: "SUPER_ADMIN", isActive: true }).select("_id name employeeId email role").lean(),
+  ]);
 
-      createdBy: employeeId,
-    });
+  const departmentTlIds = deptTls.map((u) => String(u._id));
+  if (employee.teamLeader) {
+    departmentTlIds.push(String(employee.teamLeader));
+  }
 
-  const createdLeave =
-    await Leave.findById(
-      leave._id
-    )
-      .populate(
-        "employeeId",
-        "name employeeId role"
-      )
-      .populate(
-        "mentions",
-        "name employeeId role"
-      )
-      .populate(
-        "approvedBy",
-        "name employeeId role"
-      )
-      .populate(
-        "rejectedBy",
-        "name employeeId role"
-      );
+  // Auto-pick primary reporting manager if not explicitly provided
+  let selectedManagerId = String(reportingManagerId || "").trim();
+  if (!selectedManagerId) {
+    if (employee.teamLeader) {
+      selectedManagerId = String(employee.teamLeader);
+    } else if (deptTls.length > 0) {
+      selectedManagerId = String(deptTls[0]._id);
+    } else if (employee.manager) {
+      selectedManagerId = String(employee.manager);
+    } else if (pmUsers.length > 0) {
+      selectedManagerId = String(pmUsers[0]._id);
+    } else if (adminUsers.length > 0) {
+      selectedManagerId = String(adminUsers[0]._id);
+    } else if (hrUsers.length > 0) {
+      selectedManagerId = String(hrUsers[0]._id);
+    }
+  }
+
+  let reportingManager = null;
+  if (selectedManagerId) {
+    reportingManager = await User.findOne({
+      _id: selectedManagerId,
+      isActive: true,
+    }).select("name employeeId role");
+  }
+
+  // Include department TLs, all HRs, all PMs, all Admins in mentions
+  const allReviewerIds = new Set([
+    ...departmentTlIds,
+    ...hrUsers.map((u) => String(u._id)),
+    ...pmUsers.map((u) => String(u._id)),
+    ...adminUsers.map((u) => String(u._id)),
+  ]);
+
+  if (Array.isArray(mentions) && mentions.length > 0) {
+    const customMentionUsers = await getMentionUsers(mentions);
+    customMentionUsers.forEach((u) => allReviewerIds.add(String(u._id)));
+  }
+
+  // Exclude the applicant themselves
+  allReviewerIds.delete(String(employeeId));
+
+  const leave = await Leave.create({
+    employeeId,
+    fromDate,
+    toDate,
+    category,
+    totalCalendarDays: leaveCalculation.totalCalendarDays,
+    totalLeaveDays: leaveCalculation.totalLeaveDays,
+    skippedWeekendDays: leaveCalculation.skippedWeekendDays,
+    skippedHolidayDays: leaveCalculation.skippedHolidayDays,
+    leaveDeductionType,
+    leaveBalanceDays,
+    salaryDeductionDays,
+    earlyLeaveHours: Number(earlyLeaveHours) || 0,
+    reason: reason.trim(),
+    attachment,
+    mentions: [...allReviewerIds],
+    reportingManager: reportingManager?._id || null,
+    reportingManagerSnapshot: reportingManager?.name || "",
+    createdBy: employeeId,
+  });
+
+  const createdLeave = await Leave.findById(leave._id)
+    .populate("employeeId", "name employeeId role email")
+    .populate("mentions", "name employeeId role")
+    .populate("approvedBy", "name employeeId role")
+    .populate("rejectedBy", "name employeeId role");
 
   try {
     await notificationService.notifyLeaveRequested({
       leave,
-      employee: createdLeave?.employeeId,
-      reportingManagerId: reportingManager._id,
+      employee: createdLeave?.employeeId || employee,
+      reportingManagerId: reportingManager?._id || null,
+      departmentTlIds: [...new Set(departmentTlIds)],
+      mentionIds: [...allReviewerIds],
     });
   } catch (_error) {
     // Do not fail leave creation when notification fanout fails.
@@ -392,9 +419,10 @@ const createLeave = async (body,employeeId) => {
   try {
     await sendLeaveAppliedEmail({
       leave,
-      employee:            createdLeave?.employeeId,   // populated: { name, employeeId }
-      reportingManagerId:  reportingManager._id,
-      teamLeaderId:        employee.teamLeader ?? null, // from User.findById above
+      employee: createdLeave?.employeeId || employee,
+      reportingManagerId: reportingManager?._id || null,
+      teamLeaderId: employee.teamLeader ?? null,
+      departmentTlIds: [...new Set(departmentTlIds)],
     });
   } catch (_err) {
     console.error("[Leave] sendLeaveAppliedEmail error:", _err.message);
